@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="sv">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#142827" />
+    <meta name="description" content="Din arbetsplats för bounty-agenter. Hitta uppdrag, följ dina agenter och se vad du faktiskt har tjänat." />
+    <title>BountyOS — Din agentstyrka</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23172b29'/%3E%3Cpath d='m16 5 9 5v12l-9 5-9-5V10Z' fill='none' stroke='%2387dfb2' stroke-width='2'/%3E%3Cpath d='m13 11 8 5-8 5Z' fill='%2387dfb2'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Hoppa till innehållet</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Huvudmeny">
+        <a class="brand" href="#overview" aria-label="BountyOS översikt">
+          <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="m16 3 11 6.5v13L16 29 5 22.5v-13Z"/><path d="m11 11 10 5-10 5V11Zm0 0 10 5V9"/></svg></span>
+          <span>Bounty<span class="brand-os">OS</span><small>DIN AUTONOMA ARBETSPLATS</small></span>
+        </a>
+        <div class="workspace-selector"><span class="workspace-symbol">B</span><div>Min arbetsplats<small>Personlig miljö</small></div><span class="workspace-chevron" aria-hidden="true">⌄</span></div>
+        <p class="nav-label">ARBETSPLATS</p>
+        <nav id="main-nav"></nav>
+        <div class="sidebar-bottom">
+          <div class="budget-card"><div class="budget-card-heading"><span class="tiny-leaf" aria-hidden="true">↗</span>Bygg i din egen takt<span class="budget-free">GRATIS</span></div><p>Din lokala AI. Din kontroll.</p><div class="budget-track"><span></span></div><div class="budget-caption"><span>Daglig driftbudget</span><strong>0 kr</strong></div></div>
+          <a href="#settings" class="sidebar-settings"><span class="connection-dot" id="sidebar-dot"></span><span id="sidebar-status">Ansluter till arbetsplatsen</span><span aria-hidden="true">↗</span></a>
+          <div class="sidebar-profile"><div class="avatar">DU</div><div>Din arbetsplats<small>Lokalt · BountyOS</small></div><span class="profile-version">v0.1</span></div>
+        </div>
+      </aside>
+      <div class="main-shell">
+        <header class="topbar"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="Öppna menyn" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button><div class="breadcrumb"><span>Arbetsplats</span><span aria-hidden="true">/</span><strong id="breadcrumb-current">Översikt</strong></div><div class="topbar-right"><span class="system-indicator" id="system-indicator"><span class="status-dot"></span>Ansluter</span><span class="topbar-divider"></span><div class="avatar avatar-light" title="Din arbetsplats">DU</div></div></header>
+        <div id="connection-error" class="connection-error" role="status" hidden></div>
+        <main id="main-content" tabindex="-1"><div class="loading-state"><span class="loading-spinner"></span><p>Öppnar din arbetsplats…</p></div></main>
+        <footer class="page-footer"><span><span class="footer-mark" aria-hidden="true">◈</span>BountyOS<span class="footer-separator">/</span>Lite mer gjort. Lite mindre handpåläggning.</span><span id="last-updated">Ansluter…</span></footer>
+      </div>
+    </div>
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
+    <div id="drawer-root"></div>
+    <div id="modal-root"></div>
+  </body>
+</html>

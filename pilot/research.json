@@ -1,0 +1,187 @@
+{
+  "checked_date": "2026-10-17",
+  "stage": "research_and_review",
+  "selected_for_execution": [],
+  "submitted": [],
+  "payments_verified": [],
+  "code_research": {
+    "checked_at": "2026-10-17T20:30:56.035438+00:00",
+    "method": "Read-only GitHub HTML, original issue payload and maintainer comments; no API calls succeeding, no submissions.",
+    "network_limitations": [
+      "api.github.com: Tunnel connection failed: 403 Forbidden",
+      "algora.io and www.algora.io: Tunnel connection failed: 403 Forbidden",
+      "GitHub search started returning HTTP 429; stopped broad searches."
+    ],
+    "candidates": [
+      {
+        "url": "https://github.com/oll4com/spaceapp/issues/65",
+        "title": "One command to run the full SpaceApp stack from source for contributors",
+        "advertised_amount": 450,
+        "advertised_currency": "USD",
+        "status": "OPEN",
+        "payment_evidence": "Issue body explicitly promises $450 USD paid by maintainers within 7 days after first solution PR merged, via PayPal, Wise or bank transfer.",
+        "competition": "At least 10 linked open PRs. Owner confirmed October 16 that no solution had merged and no reservations are given.",
+        "confirmation_url": "https://github.com/oll4com/spaceapp/issues/65#issuecomment-6222727310",
+        "deliverable": "One-command dev stack with Docker PostgreSQL/pgvector and Temporal, source API/web/worker/CLI host, isolation, owner setup, hot reload, lifecycle commands, CI and documentation.",
+        "blockers": [
+          "Linux and macOS or WSL2 terminal-run evidence required",
+          "Substantial scope; exceeds micro-bounty budget",
+          "First qualifying merged PR wins and reviews follow PR arrival order"
+        ],
+        "recommendation": "Watchlist only; technically feasible but poor first pilot due to competition and cross-platform proof.",
+        "not_verified": [
+          "Actual funds",
+          "All competing PR contents",
+          "Current development environment suitability"
+        ]
+      },
+      {
+        "url": "https://github.com/sybil-solutions/local-ai-registry/issues/219",
+        "title": "Recipe for RX 7900 XTX 24 GB",
+        "advertised_amount": 50,
+        "advertised_currency": "Dollar symbol only; denomination not explicitly confirmed",
+        "status": "OPEN but reserved",
+        "payment_evidence": "Explicit $50 payout after tested recipe PR merges; maintainer update gives monthly payout schedule and $1,000 monthly cap.",
+        "competition": "Claim held by mjneuroart until October 20 06:01 UTC; maintainer confirmed October 17. Ledger shows another submitted PR closed.",
+        "confirmation_url": "https://github.com/sybil-solutions/local-ai-registry/issues/219#issuecomment-6234543063",
+        "ledger_url": "https://github.com/sybil-solutions/local-ai-registry/issues/262",
+        "deliverable": "Real lab run on RX 7900 XTX at >=128K context, six gates including tool call, near-full-window recall and >=15 tokens/sec, recipe PR and green verify.",
+        "blockers": [
+          "Reserved to another contributor",
+          "Requires access to specific GPU and genuine benchmarks"
+        ],
+        "recommendation": "Do not start now; watch claim expiry only if matching hardware available.",
+        "not_verified": [
+          "Actual payment history",
+          "GPU access in our environment"
+        ]
+      },
+      {
+        "url": "https://github.com/weilixiong/TentOfTrials/issues/5",
+        "title": "Add independent log parser fixtures",
+        "advertised_amount": 25,
+        "advertised_currency": "$25 (LT), LT meaning and settlement unverified",
+        "status": "OPEN",
+        "payment_evidence": "Original issue advertises $25 (LT); visible comments do not establish a funded payout or current remaining scope.",
+        "competition": "44 comments; at least 10 linked open PRs, multiple earlier fixture implementations.",
+        "deliverable": "Hand-written JSON/plain-text/nginx fixtures, assertions for parsed fields, malformed case, compatible CLI, python3 build.py plus diagnostic artifact and PR template.",
+        "blockers": [
+          "Many overlapping completed submissions",
+          "Meaning/payment method of LT unresolved",
+          "No visible maintainer response confirming remaining scope"
+        ],
+        "recommendation": "Reject as first paid pilot; narrow technical work but poor evidence of earning opportunity.",
+        "not_verified": [
+          "Funding",
+          "Winner selection",
+          "Payment mechanism",
+          "Remaining implementation gap"
+        ]
+      },
+      {
+        "url": "https://github.com/Syncleus/aparapi/issues/97",
+        "title": "Inline declarations throw exception",
+        "advertised_amount": 20,
+        "advertised_currency": "$20 in title; denomination unconfirmed",
+        "status": "OPEN",
+        "payment_evidence": "Bounty exists in original title and label; no current funding/payment confirmation in visible issue.",
+        "competition": "At least 7 linked open PRs; original issue dates to 2018, latest visible questions on availability remain unanswered.",
+        "deliverable": "Fix Java-to-OpenCL generation for inline declaration test, preserve related codegen behavior; test linked by original author.",
+        "blockers": [
+          "Old bounty without current payer confirmation",
+          "Several submitted fixes already waiting"
+        ],
+        "recommendation": "Reject as pilot until there is stronger evidence of outstanding paid scope.",
+        "not_verified": [
+          "Current funding",
+          "Payment method and currency",
+          "Which existing solution remains insufficient"
+        ]
+      }
+    ],
+    "summary": "No immediately strong micro-bounty candidate suitable to start in current environment was verified."
+  },
+  "documentation_and_research": {
+    "checked_date": "2026-10-17",
+    "conclusion": "Inget research- eller dokumentationsuppdrag kunde verifieras som både ledigt för ny deltagare, tydligt finansierat och bra för en liten pilot. Tre konkreta annonser finns men samtliga har konkurrerande inlämningar eller oklar återstående tillgänglighet.",
+    "network": {
+      "readable": [
+        "github.com",
+        "raw.githubusercontent.com"
+      ],
+      "blocked": [
+        "earn.superteam.fun",
+        "api.github.com",
+        "algora.io",
+        "www.gitcoin.co"
+      ],
+      "search_limit": "GitHub global search returned HTTP 429; stopped broad search."
+    },
+    "candidates": [
+      {
+        "title": "Chronicle: Add PromQL query examples",
+        "source_url": "https://github.com/josedab/chronicle/blob/main/docs/BOUNTY_PROGRAM.md#-documentation-25-each",
+        "raw_source_url": "https://raw.githubusercontent.com/josedab/chronicle/main/docs/BOUNTY_PROGRAM.md",
+        "reward": "$25 (dollar currency not explicitly named in source)",
+        "deliverable": "Add at least 10 PromQL examples to docs/API.md.",
+        "status": "Listed Open in repository program table, but no open bounty-labeled issues returned; funding and available claim slot unverified.",
+        "deadline": "PR within 7 days of claim; program says bounty reopens after 14 days without PR.",
+        "payment": "GitHub Sponsors or PayPal, within 7 days of accepted merge. First claimant gets slot, tests and passing CI required, maintainer acceptance final.",
+        "competition": [
+          "https://github.com/josedab/chronicle/pull/82",
+          "https://github.com/josedab/chronicle/pull/31"
+        ],
+        "competition_evidence": "Both PRs appeared OPEN in direct filtered repository PR listing.",
+        "pilot_decision": "Do not prioritize: two already-open relevant submissions."
+      },
+      {
+        "title": "Chronicle: Add FAQ entries",
+        "source_url": "https://github.com/josedab/chronicle/blob/main/docs/BOUNTY_PROGRAM.md#-documentation-25-each",
+        "reward": "$25 (dollar currency not explicitly named in source)",
+        "deliverable": "Add at least 10 frequently asked questions to docs/FAQ.md.",
+        "status": "Listed Open in repository program table; current funded unclaimed slot unverified.",
+        "deadline": "PR within 7 days of claim; program says bounty reopens after 14 days without PR.",
+        "payment": "GitHub Sponsors or PayPal within 7 days of accepted merge; first claimant, tests and passing CI.",
+        "competition": [
+          "https://github.com/josedab/chronicle/pull/63"
+        ],
+        "competition_evidence": "PR #63 titled docs: expand FAQ with common operations guidance (Bounty #3) was OPEN in direct repository PR listing.",
+        "pilot_decision": "Do not prioritize: a relevant delivery is already pending."
+      },
+      {
+        "title": "Cognitive-OS: Collect and compare AI-generated AGI architecture proposals",
+        "source_url": "https://github.com/aLexzzz430/Cognitive-OS/issues/5",
+        "reward": "3,000 USD for an accepted submission",
+        "deliverable": "Collect actual outputs from at least 8 distinct model families; preserve raw outputs/prompts/sources and deliver comparison.csv across 11 dimensions, summary and engineering synthesis in a PR.",
+        "status": "GitHub issue OPEN; updated 2026-10-15; 95 comments, at least 10 linked OPEN PRs. Advertised remaining budget not independently confirmed.",
+        "deadline": "No deadline stated.",
+        "payment": "Details private after acceptance. Maintainer may select one winner, request revisions, or reject. /attempt comment at start and /claim with PR after delivery.",
+        "competition": [
+          "https://github.com/aLexzzz430/Cognitive-OS/pull/10",
+          "https://github.com/aLexzzz430/Cognitive-OS/pull/11",
+          "https://github.com/aLexzzz430/Cognitive-OS/pull/64"
+        ],
+        "competition_evidence": "Embedded issue data lists multiple open PRs; latest visible claim linked #64 on 2026-10-15.",
+        "pilot_decision": "Poor small pilot fit: requires access to 8 actual model families and substantial research; crowded and no clear current review/payment timetable."
+      }
+    ],
+    "discarded": [
+      {
+        "url": "https://github.com/Oliversmoke/comeback/issues/246",
+        "reason": "Label Medium/150 is not sufficient evidence of monetary amount/currency. Maintainer has not answered visible reward clarification request."
+      },
+      {
+        "url": "https://github.com/BasedHardware/omi/issues/19080",
+        "reason": "Applicant-created bounty proposal for already completed work; $25–$50 proposed, not an approved reward."
+      },
+      {
+        "url": "https://github.com/mautic/mautic/issues/17747",
+        "reason": "Already assigned to two users and 74h estimate; no clear stand-alone reward amount."
+      },
+      {
+        "url": "https://github.com/Clawland-AI/clawland-ai.github.io/issues/2",
+        "reason": "Applicant-created discussion referencing $150 board. Several existing translation PRs; remaining scope unconfirmed; source bounty board not directly verified."
+      }
+    ]
+  }
+}
