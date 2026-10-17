@@ -25,6 +25,23 @@ Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel 
 
 Uppdatera från den första Windows-versionen: stoppa BountyOS med Ctrl+C i terminalfönstret, packa upp den senaste ZIP-filen separat och kopiera dess mapp `bountyos` till din befintliga programmapp. Välj att ersätta filerna. Dina mappar `data` och `.venv` behålls. Starta sedan med den befintliga `start-windows.cmd` och uppdatera webbläsaren med Ctrl+F5. Denna rättning kräver inga nya paket eller modellnedladdningar.
 
+#### Om GitHub ger CERTIFICATE_VERIFY_FAILED
+
+BountyOS kompletterar Pythons betrodda systemcertifikat med certifikatpaketet `certifi`, som redan ingår i installationen. Både certifikatkedjan och servernamnet kontrolleras. Om certifikatkontrollen ändå misslyckas visas orsaken i appen och följer med även i meddelandet om väntetid. Kontrollera då datorns datum och tid samt om en proxy eller ett säkerhetsprogram använder en egen certifikatutfärdare; en sådan utfärdare måste kunna verifieras genom datorns betrodda certifikat.
+
+För en äldre installation kan certifikatpaketet först prövas från ett kommandofönster i programmappen:
+
+```cmd
+.\.venv\Scripts\python.exe -c "import ssl,certifi; from urllib.request import urlopen; c=ssl.create_default_context(); c.load_verify_locations(certifi.where()); print(urlopen('https://github.com',context=c,timeout=25).status)"
+```
+
+Om testet visar `200` kan du stoppa den gamla BountyOS-processen och starta den från samma kommandofönster med följande inställning. Den gäller bara det kommandofönstret och program som startas därifrån. Den aktuella versionens certifikaträttning finns i mappen `bountyos` och kan installeras enligt uppdateringsstegen ovan.
+
+```cmd
+set "SSL_CERT_FILE=%CD%\.venv\Lib\site-packages\certifi\cacert.pem"
+start-windows.cmd
+```
+
 ### Linux, macOS eller WSL
 
 Kräver Python 3.11 eller senare och Bash (Linux, macOS eller WSL). Kör från projektets rot:

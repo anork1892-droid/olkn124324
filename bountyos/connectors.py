@@ -13,9 +13,12 @@ import json
 import os
 from pathlib import PurePosixPath
 import re
+import ssl
 import threading
 import time
 from urllib import error, parse, request
+
+import certifi
 
 
 class ConnectorError(RuntimeError):
@@ -48,7 +51,12 @@ class HTTP:
         self._next = 0.0
         self._blocked_until = 0.0
         self._failures = 0
-        handlers = [NoRedirect()]
+        self._last_failure = None
+        # Keep system/custom trust and add the application's pinned CA bundle.
+        # Windows Python installations can lack an issuer that certifi supplies.
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=certifi.where())
+        handlers = [NoRedirect(), request.HTTPSHandler(context=context)]
         if local:
             handlers.append(request.ProxyHandler({}))
         self.opener = request.build_opener(*handlers)
@@ -66,7 +74,8 @@ class HTTP:
         with self._lock:
             now = self.clock()
             if now < self._blocked_until:
-                raise RateLimited(f"Källan har pausats efter ett nätverksfel. Försök om {int(self._blocked_until-now)+1} s.")
+                cause = f" Orsak: {self._last_failure}" if self._last_failure else ""
+                raise RateLimited(f"Källan har pausats efter ett nätverksfel. Försök om {int(self._blocked_until-now)+1} s." + cause)
             delay = max(0, self._next - now)
             self._next = max(now, self._next) + self.min_interval
         if delay:
@@ -85,25 +94,35 @@ class HTTP:
                 if len(raw) > limit:
                     raise ConnectorError("Svaret är större än den tillåtna storleken.")
                 result = raw.decode("utf-8")
-            self._failures = 0
+            with self._lock:
+                if self.clock() >= self._blocked_until:
+                    self._failures = 0
+                    self._last_failure = None
             return result
         except error.HTTPError as exc:
             if exc.code in {403, 429, 500, 502, 503, 504}:
-                self._backoff(exc.headers.get("Retry-After"))
+                self._backoff(exc.headers.get("Retry-After"), reason=str(HTTPFailure(exc.code)))
             if exc.code == 429:
                 raise RateLimited("GitHub begränsade sökningen (HTTP 429); automatisk återhämtning är aktiverad.") from None
             raise HTTPFailure(exc.code) from None
-        except (error.URLError, TimeoutError, OSError, UnicodeDecodeError):
-            self._backoff()
-            raise ConnectorError("Anslutningen misslyckades. Kontrollera nätverk och att tjänsten körs.") from None
+        except (error.URLError, TimeoutError, OSError, UnicodeDecodeError) as exc:
+            cause = exc.reason if isinstance(exc, error.URLError) else exc
+            if isinstance(cause, ssl.SSLCertVerificationError):
+                message = "Python kunde inte verifiera webbplatsens HTTPS-certifikat. Kontrollera datorns datum och betrodda certifikat."
+            else:
+                message = "Anslutningen misslyckades. Kontrollera nätverk och att tjänsten körs."
+            self._backoff(reason=message)
+            raise ConnectorError(message) from None
 
-    def _backoff(self, retry_after=None):
-        self._failures += 1
-        try:
-            seconds = float(retry_after)
-        except (ValueError, TypeError):
-            seconds = min(1800, 30 * (2 ** min(self._failures, 6)))
-        self._blocked_until = self.clock() + min(3600, max(30, seconds))
+    def _backoff(self, retry_after=None, *, reason=None):
+        with self._lock:
+            self._failures += 1
+            try:
+                seconds = float(retry_after)
+            except (ValueError, TypeError):
+                seconds = min(1800, 30 * (2 ** min(self._failures, 6)))
+            self._blocked_until = max(self._blocked_until, self.clock() + min(3600, max(30, seconds)))
+            self._last_failure = reason
 
     def json(self, url, **kwargs):
         try:
