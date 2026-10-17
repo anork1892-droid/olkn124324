@@ -80,6 +80,15 @@
   };
   const displayAgentStatus = agent => !isRunning() && ["idle", "ready"].includes(agent.status) ? "Pausad" : agentStatuses[agent.status] || String(agent.status || "Väntar");
   const roleName = agent => roleNames[agent.role] || String(agent.role || "Agent");
+  const agentTaskText = agent => {
+    if (agent.role === "scout" || agent.id === "scout") {
+      if (agent.detail) return agent.detail;
+      if (["scouting", "scanning", "searching"].includes(agent.status)) return "Söker efter uppdrag och kontrollerar vilka som går att utföra.";
+      return isRunning() ? `Söker automatiskt var ${number(settings().poll_interval_minutes) || 30}:e minut.` : "Automatiska sökningar är pausade.";
+    }
+    const assignedTask = tasks().find(task => String(task.id) === String(agent.task));
+    return assignedTask?.title || agent.task || agent.detail || (isRunning() ? "Väntar på nästa uppgift." : "Arbetet startar när du aktiverar agenterna.");
+  };
 
   function friendlyError(detail) {
     if (typeof detail === "string") return detail;
@@ -209,11 +218,11 @@
   }
 
   function tasksView() {
-    return `${heading('En plats för <em>nästa möjlighet.</em>', "Från första träffen till granskad leverans. Följ varje uppdrag här.", controls(), "UPPDRAG")}${operatingStrip()}${tasksPanel(false)}<div class="hint-card section-gap"><h3>En annonserad belöning är en möjlighet</h3>Belöningar visas i den valuta uppdragsgivaren anger. Intäkter räknas först när du registrerar en faktisk inbetalning i Ekonomi.</div>`;
+    return `${heading('En plats för <em>nästa möjlighet.</em>', "Hittat betyder registrerat, men ännu inte godkänt för arbete. Arbetsagenten börjar när statusen är Utvalt.", controls(), "UPPDRAG")}${operatingStrip()}${tasksPanel(false)}<div class="hint-card section-gap"><h3>En annonserad belöning är en möjlighet</h3>Belöningar visas i den valuta uppdragsgivaren anger. Intäkter räknas först när du registrerar en faktisk inbetalning i Ekonomi.</div>`;
   }
 
   function agentsView() {
-    return `${heading('Möt din <em>agentstyrka.</em>', "Ett gemensamt mål. Tydliga roller. Du bestämmer takten.", controls(false), "AGENTER")}${operatingStrip()}<div class="view-intro"><span>${agents().length} agenter i arbetsplatsen · högst ${number(settings().max_agents) || 1} samtidigt${settings().autoscale ? " · automatisk skalning på" : ""}</span><a class="button button-secondary button-small" href="#settings">${icon("settings")}Hantera kapacitet</a></div><div class="agents-grid">${agents().length ? agents().map((agent, index) => `<article class="panel agent-card"><div class="agent-card-top"><div class="agent-avatar variant-${index % 4}">${icon(["search", "review", "spark", "shield"][index % 4])}</div><span class="agent-status${agentWorking(agent) ? " working" : agent.status === "blocked" ? " blocked" : ""}">${escapeHTML(displayAgentStatus(agent))}</span></div><h3>${escapeHTML(agent.name || "Agent")}</h3><p class="agent-card-role">${escapeHTML(roleName(agent))}</p><div class="agent-current-task"><strong>JUST NU</strong>${escapeHTML(agent.task || (isRunning() ? "Väntar på nästa uppgift." : "Arbetet startar när du aktiverar agenterna."))}</div></article>`).join("") : '<div class="panel task-empty"><span class="empty-illustration">' + icon("agents") + '</span><strong>Din agentstyrka förbereds</strong><p>Agenternas roller och aktivitet visas här när systemet har laddat dem.</p></div>'}</div><div class="hint-card section-gap"><h3>Skala i takt med resultatet</h3>Du kan ha upp till tio samtidiga agenter. Lokal AI delar datorns kapacitet: fler agenter kan behöva mer minne och ge längre svarstider. Automatisk skalning anpassar kapaciteten upp till ditt valda tak.</div>`;
+    return `${heading('Möt din <em>agentstyrka.</em>', "Ett gemensamt mål. Tydliga roller. Du bestämmer takten.", controls(false), "AGENTER")}${operatingStrip()}<div class="view-intro"><span>${agents().length} agenter i arbetsplatsen · högst ${number(settings().max_agents) || 1} samtidigt${settings().autoscale ? " · automatisk skalning på" : ""}</span><a class="button button-secondary button-small" href="#settings">${icon("settings")}Hantera kapacitet</a></div><div class="agents-grid">${agents().length ? agents().map((agent, index) => `<article class="panel agent-card"><div class="agent-card-top"><div class="agent-avatar variant-${index % 4}">${icon(["search", "review", "spark", "shield"][index % 4])}</div><span class="agent-status${agentWorking(agent) ? " working" : agent.status === "blocked" ? " blocked" : ""}">${escapeHTML(displayAgentStatus(agent))}</span></div><h3>${escapeHTML(agent.name || "Agent")}</h3><p class="agent-card-role">${escapeHTML(roleName(agent))}</p><div class="agent-current-task"><strong>JUST NU</strong>${escapeHTML(agentTaskText(agent))}</div></article>`).join("") : '<div class="panel task-empty"><span class="empty-illustration">' + icon("agents") + '</span><strong>Din agentstyrka förbereds</strong><p>Agenternas roller och aktivitet visas här när systemet har laddat dem.</p></div>'}</div><div class="hint-card section-gap"><h3>Skala i takt med resultatet</h3>Du kan ha upp till tio samtidiga agenter. Lokal AI delar datorns kapacitet: fler agenter kan behöva mer minne och ge längre svarstider. Automatisk skalning anpassar kapaciteten upp till ditt valda tak.</div>`;
   }
 
   function financeView() {

@@ -17,6 +17,14 @@ En lokal webbapp som samlar bounties, fördelar dokumentationsarbete mellan agen
 
 Låt Ollama och BountyOS terminalfönster vara igång. Datorn behöver vara vaken för att arbetet ska fortsätta; dashboardfliken kan stängas. En 3B-modell tar mindre minne men kan behöva avvisa fler svåra uppdrag. Hastighet och faktisk leveranskvalitet måste prövas på din dator. Windows-kommandofilerna har granskats men inte körts i en riktig Windows-miljö här.
 
+#### Om Scout väntar och uppdragen står som Hittat
+
+Scout hittar och granskar uppdrag med det sökintervall du valt. **Hittat** betyder att ett uppdrag är registrerat men ännu inte utvalt för arbete. Arbetsagenten börjar först när granskningen ger statusen **Utvalt** och den lokala modellen är ansluten. Klicka på uppdraget och läs **Senaste bedömning** för orsaken; Scouts kort visar resultatet av senaste sökningen och eventuella fel.
+
+Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel visas på uppdraget och prövas igen vid nästa sökning. GitHubs väntetider respekteras. Källor som bara är programsidor behöver en direktlänk till ett enskilt GitHub-ärende för automatisk granskning. Klicka **Sök uppdrag** för att starta en kontroll nu.
+
+Uppdatera från den första Windows-versionen: stoppa BountyOS med Ctrl+C i terminalfönstret, packa upp den senaste ZIP-filen separat och kopiera dess mapp `bountyos` till din befintliga programmapp. Välj att ersätta filerna. Dina mappar `data` och `.venv` behålls. Starta sedan med den befintliga `start-windows.cmd` och uppdatera webbläsaren med Ctrl+F5. Denna rättning kräver inga nya paket eller modellnedladdningar.
+
 ### Linux, macOS eller WSL
 
 Kräver Python 3.11 eller senare och Bash (Linux, macOS eller WSL). Kör från projektets rot:

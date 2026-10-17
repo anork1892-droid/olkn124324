@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 
-from .connectors import (ConnectorError, GitHub, GitHubSubmitter, Ollama, embedded_json,
+from .connectors import (ConnectorError, GitHub, GitHubSubmitter, Ollama, RateLimited, embedded_json,
                          issue_parts, qualify, validate_delivery, walk)
 
 
@@ -67,7 +67,7 @@ class Engine:
                 elif task["status"] == "submitting":
                     self.store.update_task(task["id"], status="blocked", reason="Inlämningen avbröts. Kontrollera GitHub innan ett nytt försök görs.")
             for agent in self.store.list_agents():
-                self.store.set_agent(agent["id"], status="idle", task=None)
+                self.store.set_agent(agent["id"], status="idle", task=None, detail=None)
             self._scheduler = threading.Thread(target=self._loop, name="bountyos-scheduler", daemon=True)
             self._scheduler.start()
 
@@ -113,46 +113,101 @@ class Engine:
         return {"status": "queued", "message": "Sökning startad."}
 
     def _scan(self):
-        self.store.set_agent("scout", name="Scout", role="scout", status="scouting", task=None)
-        self.store.log("Scout söker efter öppna dokumentationsbounties på GitHub.")
+        self.store.set_agent("scout", name="Scout", role="scout", status="scouting", task=None,
+                             detail="Kontrollerar hittade uppdrag och söker efter nya dokumentationsbounties.")
+        self.store.log("Scout kontrollerar väntande uppdrag och söker efter nya dokumentationsbounties.")
         count = 0
+        failures = 0
+        scan_error = None
+        checked = set()
+        pending = []
+
+        def update_pending(task, **fields):
+            if task:
+                with self._task_lock:
+                    current = self.store.get_task(task["id"])
+                    if current and current["status"] in {"discovered", "qualified"}:
+                        self.store.update_task(task["id"], **fields)
+
+        def assess(url):
+            nonlocal count, failures
+            if url in checked or len(checked) >= 20 or self._stop.is_set():
+                return
+            checked.add(url)
+            prior = existing.get(url)
+            if prior:
+                current = self.store.get_task(prior["id"])
+                if not current or current["status"] not in {"discovered", "qualified"}:
+                    return
+            try:
+                issue_parts(url)
+            except ConnectorError:
+                reason = "Källan är inte ett enskilt GitHub-ärende. Automatisk granskning kräver en direktlänk till /issues/ följt av ärendets nummer."
+                update_pending(prior, status="blocked", reason=reason)
+                self.store.log(reason, level="warning")
+                failures += 1
+                return
+            try:
+                candidate = qualify(self.github.issue(url))
+            except ConnectorError as exc:
+                reason = "Granskningen kunde inte slutföras: " + str(exc) + " Ett nytt försök görs vid nästa sökning."
+                update_pending(prior, status="discovered", reason=reason)
+                self.store.log(reason, level="warning")
+                failures += 1
+                if isinstance(exc, RateLimited):
+                    raise
+                return
+            with self._task_lock:
+                # A worker may have claimed the task while the network read ran.
+                current = self.store.get_task(prior["id"]) if prior else None
+                if current and current["status"] not in {"discovered", "qualified"}:
+                    return
+                task_id = self.store.upsert_task(candidate)
+                latest = self.store.get_task(task_id)
+                if latest and latest["status"] in {"discovered", "qualified"}:
+                    self.store.update_task(task_id, status=candidate["status"], reason=candidate["reason"])
+            count += 1
+
         try:
             existing = {task["url"]: task for task in self.store.list_tasks()}
-            urls = [t["url"] for t in existing.values() if t["status"] == "discovered"][:12]
-            found = self.github.search()
-            urls = list(dict.fromkeys(found + urls))[:20]
-            self._connection("github", {"configured": True, "status": "connected", "detail": "GitHubs offentliga sökning fungerar."})
-            for url in urls:
+            pending = sorted((task for task in existing.values() if task["status"] == "discovered"),
+                             key=lambda task: (task["updated_at"], task["id"]))[:12]
+            # Existing work must not depend on a successful search for new work.
+            for task in pending:
                 if self._stop.is_set():
                     break
-                prior = existing.get(url)
-                if prior and prior["status"] not in {"discovered", "qualified"}:
-                    continue
-                try:
-                    issue = self.github.issue(url)
-                    candidate = qualify(issue)
-                    with self._task_lock:
-                        task_id = self.store.upsert_task(candidate)
-                        # Failed review/publication stays blocked until explicitly retried.
-                        latest = self.store.get_task(task_id)
-                        if latest and latest["status"] in {"discovered", "qualified"}:
-                            self.store.update_task(task_id, status=candidate["status"], reason=candidate["reason"])
-                    count += 1
-                except ConnectorError as exc:
-                    self.store.log("Kunde inte kontrollera ett uppdrag: " + str(exc), level="warning")
-                    # Do not keep hammering a blocked transport.
-                    if "pausats" in str(exc) or "429" in str(exc):
+                assess(task["url"])
+            if not self._stop.is_set():
+                found = self.github.search()
+                self._connection("github", {"configured": True, "status": "connected", "detail": "GitHubs offentliga sökning fungerar."})
+                for url in found:
+                    if self._stop.is_set() or len(checked) >= 20:
                         break
+                    assess(url)
             self.store.log(f"Sökning klar: {count} uppdrag kontrollerades. Annonserade belopp räknas inte som intäkter.")
         except ConnectorError as exc:
+            scan_error = str(exc)
             self._connection("github", {"configured": True, "status": "error", "detail": str(exc)})
-            self.store.log("Sökningen pausades: " + str(exc), level="warning")
+            self.store.log(f"{count} uppdrag kontrollerades. Sökningen pausades: {exc}", level="warning")
         except Exception:
             # Untrusted responses must not leak response bodies, credentials, or prompts into logs.
-            self.store.log("Sökningen misslyckades med ett oväntat svar; kontrollera anslutningen.", level="error")
+            scan_error = "Ett oväntat svar avbröt granskningen; kontrollera anslutningen."
+            self._connection("github", {"configured": True, "status": "error", "detail": scan_error})
+            self.store.log(scan_error, level="error")
         finally:
-            self._next_scan = time.monotonic() + self.store.get_settings()["poll_interval_minutes"] * 60
-            self.store.set_agent("scout", status="idle", task=None)
+            if scan_error:
+                for task in pending:
+                    if task["url"] not in checked:
+                        update_pending(task, reason="Granskningen väntar efter ett fel: " + scan_error + " Ett nytt försök görs vid nästa sökning.")
+            interval = self.store.get_settings()["poll_interval_minutes"]
+            self._next_scan = time.monotonic() + interval * 60
+            detail = f"{count} uppdrag bedömdes. "
+            if scan_error:
+                detail += "Sökningen avbröts: " + scan_error + " "
+            elif failures:
+                detail += f"{failures} uppdrag kunde inte granskas. Läs Senaste bedömning på uppdragen. "
+            detail += f"Söker automatiskt var {interval}:e minut när agenterna är startade."
+            self.store.set_agent("scout", status="idle", task=None, detail=detail)
             self._scan_lock.release()
 
     def _worker_limit(self, settings):
