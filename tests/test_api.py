@@ -94,6 +94,26 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/connections/check", json={}).status_code, 200)
         self.assertEqual(self.client.post("/api/scan", json={}).status_code, 200)
 
+    def test_explicit_retry_reassesses_completed_negative_decisions(self):
+        store = self.app.state.store
+        for number, status in enumerate(("skipped", "blocked", "failed"), start=200):
+            with self.subTest(status=status):
+                task_id = store.upsert_task({"title": "Review again", "url": f"https://github.com/example/project/issues/{number}", "status": status})
+                response = self.client.post(f"/api/tasks/{task_id}/retry", json={})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(store.get_task(task_id)["status"], "discovered")
+        self.assertEqual(self.app.state.engine.scans, 3)
+
+    def test_retry_does_not_reset_active_work_or_submissions(self):
+        store = self.app.state.store
+        for number, status in enumerate(("working", "ready", "submitting", "submitted", "paid"), start=300):
+            with self.subTest(status=status):
+                task_id = store.upsert_task({"title": "Keep outcome", "url": f"https://github.com/example/project/issues/{number}", "status": status})
+                response = self.client.post(f"/api/tasks/{task_id}/retry", json={})
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(store.get_task(task_id)["status"], status)
+        self.assertEqual(self.app.state.engine.scans, 0)
+
     def test_saved_engine_delivery_can_be_read_through_api(self):
         from bountyos.engine import Engine
 

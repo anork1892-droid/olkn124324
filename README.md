@@ -23,6 +23,8 @@ Scout hittar och granskar uppdrag med det sökintervall du valt. **Hittat** bety
 
 Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel visas på uppdraget och prövas igen vid nästa sökning. GitHubs väntetider respekteras. Källor som bara är programsidor behöver en direktlänk till ett enskilt GitHub-ärende för automatisk granskning. Klicka **Sök uppdrag** för att starta en kontroll nu.
 
+Sökningen växlar mellan riktade sökningar efter dokumentation i ärendets titel och en bounty i titeln eller en bounty-etikett. Enbart omnämnanden i beskrivningen eller kommentarer räcker inte för en träff. Uppdrag utan verifierbart belopp eller med föreslagen belöning blir **Bortvalt**. Oklara betalningsvillkor, reservationer eller arbete utanför agentens stöd blir **Blockerat**. Dessa uppdrag ligger kvar med en förklaring men granskas inte om vid varje sökning. Om uppdragsgivaren ändrar villkoren kan du öppna uppdraget och välja **Försök igen**. Sökresultatet och Scouts kort visar hur många uppdrag som valdes ut, valdes bort eller blockerades.
+
 Uppdatera från den första Windows-versionen: stoppa BountyOS med Ctrl+C i terminalfönstret, packa upp den senaste ZIP-filen separat och kopiera dess mapp `bountyos` till din befintliga programmapp. Välj att ersätta filerna. Dina mappar `data` och `.venv` behålls. Starta sedan med den befintliga `start-windows.cmd` och uppdatera webbläsaren med Ctrl+F5. Denna rättning kräver inga nya paket eller modellnedladdningar.
 
 #### Om GitHub ger CERTIFICATE_VERIFY_FAILED

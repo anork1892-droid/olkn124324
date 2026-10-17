@@ -147,8 +147,8 @@ def create_app(data_dir: str | Path | None = None, engine_factory=None) -> FastA
         task = await invoke(store.get_task, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="Uppdraget finns inte.")
-        if task["status"] not in {"blocked", "failed"}:
-            raise HTTPException(status_code=409, detail="Endast blockerade eller misslyckade uppdrag kan granskas på nytt.")
+        if task["status"] not in {"blocked", "failed", "skipped"}:
+            raise HTTPException(status_code=409, detail="Endast blockerade, bortvalda eller misslyckade uppdrag kan granskas på nytt.")
         await run_in_threadpool(store.update_task, task_id, status="discovered", reason="Väntar på ny granskning.")
         await invoke(store.log, f"Ny granskning köad: {task['title']}.")
         await invoke(request.app.state.engine.scan_now)

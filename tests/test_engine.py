@@ -10,6 +10,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
 from bountyos.connectors import (ConnectorError, GitHub, GitHubSubmitter, HTTP, HTTPFailure, Ollama,
                                  RateLimited, qualify, safe_doc_path, validate_delivery,
@@ -39,13 +40,22 @@ class QualifierTests(unittest.TestCase):
         self.assertFalse(task["source_facts"]["reward_verified_paid"])
 
     def test_no_payout_for_proposed_or_unconfirmed_amount(self):
-        for change in [
-            {"body": "Suggested bounty: 25 USD"}, {"authorAssociation": "NONE"},
-            {"title": "Docs bounty $25", "body": "Pays $25 after merge"},
-            {"title": "Documentation request", "body": "Please help"},
+        for change, status, reason in [
+            ({"body": "Suggested bounty: 25 USD"}, "skipped", "förslag"),
+            ({"authorAssociation": "NONE"}, "blocked", "maintainer"),
+            ({"title": "Docs bounty $25", "body": "Pays $25 after merge"}, "blocked", "dollarvalutan"),
+            ({"title": "Documentation request", "body": "Please help"}, "skipped", "ersättning"),
         ]:
             with self.subTest(change=change):
-                self.assertEqual(qualify(issue(**change))["status"], "discovered")
+                task = qualify(issue(**change))
+                self.assertEqual(task["status"], status)
+                self.assertIn(reason, task["reason"])
+                self.assertFalse(task["source_facts"]["reward_verified_paid"])
+
+    def test_incidental_bounty_discussion_is_not_pending_work(self):
+        task = qualify(issue(title="Agent coordination log", body="Discuss documentation and future bounty ideas."))
+        self.assertEqual(task["status"], "skipped")
+        self.assertIsNone(task["reward_amount"])
 
     def test_closed_reserved_competing_or_large_scope_is_blocked(self):
         for change in [
@@ -125,6 +135,11 @@ class BoundaryTests(unittest.TestCase):
 
 
 class GitHubParsingTests(unittest.TestCase):
+    @staticmethod
+    def requested_queries(transport):
+        return [parse_qs(urlsplit(call.args[0]).query)["q"][0]
+                for call in transport.get.call_args_list]
+
     def test_search_reads_embedded_results_and_deduplicates(self):
         row = {"repo": {"repository": {"owner_login": "owner", "name": "project"}}, "number": 7}
         transport = Mock()
@@ -136,6 +151,74 @@ class GitHubParsingTests(unittest.TestCase):
         transport = Mock()
         transport.get.return_value = json.dumps({"payload": {"blackbirdSearchRoute": {"results": [row]}}})
         self.assertEqual(GitHub(http=transport).search(), ["https://github.com/owner/project/issues/7"])
+
+    def test_search_ignores_unrelated_and_nested_issue_references(self):
+        real = "https://github.com/owner/project/issues/7"
+        unrelated = "https://github.com/other/project/issues/8"
+        transport = Mock()
+        transport.get.return_value = json.dumps({
+            "url": unrelated,
+            "metadata": {"results": [{"url": unrelated}]},
+            "payload": {"results": [{"url": real, "references": [{"url": unrelated}]}]},
+        })
+        self.assertEqual(GitHub(http=transport).search(), [real])
+
+    def test_search_accepts_only_valid_direct_rows_and_preserves_limit(self):
+        transport = Mock()
+        transport.get.return_value = json.dumps({"payload": {"results": [
+            None, [], "invalid", {"repo": {"repository": []}, "number": 2},
+            {"url": "https://example.org/owner/project/issues/1"},
+            {"url": "/owner/project/pull/1"},
+            {"repo": {"repository": {"owner_login": "owner", "name": "project"}}, "number": True},
+            {"url": "/owner/project/issues/7"},
+            {"issue_url": "https://github.com/owner/project/issues/8"},
+            {"repo": {"repository": {"owner_login": "owner", "name": "project"}}, "number": 9},
+        ]}})
+        github = GitHub(http=transport)
+        self.assertEqual(github.search(limit=2), ["https://github.com/owner/project/issues/7", "https://github.com/owner/project/issues/8"])
+        self.assertEqual(github.search(limit=3)[-1], "https://github.com/owner/project/issues/9")
+
+    def test_automatic_search_rotates_one_bounded_query_per_call(self):
+        transport = Mock()
+        transport.get.return_value = json.dumps({"payload": {"results": []}})
+        github = GitHub(http=transport)
+        for _ in range(len(github.SEARCH_QUERIES) + 1):
+            self.assertEqual(github.search(), [])
+        expected = [*github.SEARCH_QUERIES, github.SEARCH_QUERIES[0]]
+        self.assertEqual(self.requested_queries(transport), expected)
+        self.assertEqual(transport.get.call_count, len(expected))
+        for query in expected:
+            for qualifier in ("is:issue", "is:open", "no:assignee", "in:title"):
+                self.assertIn(qualifier, query.split())
+
+    def test_explicit_search_does_not_change_automatic_rotation(self):
+        transport = Mock()
+        transport.get.return_value = json.dumps({"payload": {"results": []}})
+        github = GitHub(http=transport)
+        github.search()
+        github.search(query="repo:owner/project documentation")
+        github.search()
+        self.assertEqual(self.requested_queries(transport), [
+            github.SEARCH_QUERIES[0], "repo:owner/project documentation", github.SEARCH_QUERIES[1],
+        ])
+
+    def test_search_failures_retry_same_query_without_automatic_extra_request(self):
+        failures = [
+            RateLimited("HTTP 429"),
+            json.dumps({"error": "unreadable search"}),
+            json.dumps({"payload": {"results": [{"repo": None}]}}),
+            json.dumps({"payload": {"results": [], "errors": ["invalid query"]}}),
+        ]
+        for failure in failures:
+            with self.subTest(failure=failure):
+                transport = Mock()
+                transport.get.side_effect = [failure, json.dumps({"payload": {"results": []}})]
+                github = GitHub(http=transport)
+                with self.assertRaises(ConnectorError):
+                    github.search()
+                self.assertEqual(transport.get.call_count, 1)
+                github.search()
+                self.assertEqual(self.requested_queries(transport), [github.SEARCH_QUERIES[0]] * 2)
 
     def test_unknown_github_payload_is_not_reported_as_zero_results(self):
         transport = Mock()

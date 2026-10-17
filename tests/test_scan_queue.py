@@ -116,7 +116,7 @@ class ScanQueueTests(unittest.TestCase):
         self.assertEqual(self.store.get_state()["metrics"]["earned_sek"], 0)
 
     def test_search_cannot_reactivate_existing_work_or_delivery_states(self):
-        protected = ["blocked", "failed", "working", "reviewing", "ready", "submitting", "submitted", "awaiting_payment", "paid"]
+        protected = ["skipped", "blocked", "failed", "working", "reviewing", "ready", "submitting", "submitted", "awaiting_payment", "paid"]
         tasks = [self.pending(number, status=status, reason="Keep current outcome")
                  for number, status in enumerate(protected, start=1)]
         self.github.search.return_value = [task["url"] for task in tasks]
@@ -129,6 +129,52 @@ class ScanQueueTests(unittest.TestCase):
                 updated = self.store.get_task(task["id"])
                 self.assertEqual(updated["status"], task["status"])
                 self.assertEqual(updated["reason"], task["reason"])
+
+    def test_unsuitable_pending_tasks_leave_queue_and_are_not_read_again(self):
+        cases = [
+            ({"title": "Coordination thread", "body": "Documentation updates and status notes."}, "skipped"),
+            ({"body": "Suggested bounty: 25 USD for the README clarification."}, "skipped"),
+            ({"authorAssociation": "UNKNOWN"}, "blocked"),
+            ({"title": "README bounty $25", "body": "We pay $25 for the README clarification."}, "blocked"),
+        ]
+        tasks = [self.pending(number) for number in range(1, len(cases) + 1)]
+        fixtures = {task["url"]: issue(url=task["url"], number=number, **changes)
+                    for number, (task, (changes, _)) in enumerate(zip(tasks, cases), start=1)}
+        self.github.issue.side_effect = fixtures.__getitem__
+        self.github.search.return_value = [task["url"] for task in tasks]
+
+        self.scan()
+
+        for task, (_, expected) in zip(tasks, cases):
+            with self.subTest(expected=expected, url=task["url"]):
+                updated = self.store.get_task(task["id"])
+                self.assertEqual(updated["status"], expected)
+                self.assertNotEqual(updated["reason"], "Väntar på ny granskning.")
+        self.assertEqual(self.github.issue.call_count, len(cases))
+        self.assertIn("0 utvalda, 2 bortvalda, 2 blockerade", self.scout()["detail"])
+
+        self.github.issue.reset_mock()
+        self.scan()
+
+        self.github.issue.assert_not_called()
+        self.assertEqual(self.github.search.call_count, 2)
+
+    def test_successful_scan_reports_selected_skipped_and_blocked_outcomes(self):
+        tasks = [self.pending(number) for number in (1, 2, 3)]
+        fixtures = {
+            tasks[0]["url"]: self.read_issue(tasks[0]["url"]),
+            tasks[1]["url"]: issue(url=tasks[1]["url"], number=2, title="Coordination", body="Status updates"),
+            tasks[2]["url"]: issue(url=tasks[2]["url"], number=3, state="CLOSED"),
+        }
+        self.github.issue.side_effect = fixtures.__getitem__
+
+        self.scan()
+
+        summary = "3 uppdrag kontrollerades: 1 utvalt, 1 bortvalt, 1 blockerat."
+        self.assertIn(summary, self.scout()["detail"])
+        activity = self.store.get_state()["activity"]
+        self.assertTrue(any("Sökning klar: " + summary in event["message"] for event in activity))
+        self.assertEqual(self.store.get_state()["metrics"]["earned_sek"], 0)
 
     def test_successful_read_does_not_overwrite_task_claimed_during_request(self):
         task = self.pending(7)
@@ -145,6 +191,7 @@ class ScanQueueTests(unittest.TestCase):
         self.assertEqual(updated["status"], "working")
         self.assertEqual(updated["reason"], "Worker started")
         self.github.issue.assert_called_once_with(task["url"])
+        self.assertIn("0 uppdrag kontrollerades: 0 utvalda", self.scout()["detail"])
 
     def test_failed_read_does_not_overwrite_task_claimed_during_request(self):
         task = self.pending(7)

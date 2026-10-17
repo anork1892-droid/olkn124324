@@ -243,36 +243,70 @@ def validate_delivery(value):
 
 
 class GitHub:
+    SEARCH_QUERIES = (
+        "is:issue is:open no:assignee bounty documentation in:title",
+        "is:issue is:open no:assignee bounty readme in:title",
+        "is:issue is:open no:assignee bounty docs in:title",
+        "is:issue is:open no:assignee bounty typo in:title",
+        "is:issue is:open no:assignee label:bounty documentation in:title",
+        "is:issue is:open no:assignee label:bounty readme in:title",
+    )
+
     def __init__(self, http=None):
         self.http = http or HTTP(min_interval=3)
+        self._search_index = 0
         self.last_status = {"configured": True, "status": "unknown", "detail": "Offentlig GitHub-sökning är ännu inte kontrollerad."}
 
-    def search(self, query='is:issue is:open bounty documentation no:assignee', limit=12):
+    def search(self, query=None, limit=12):
+        automatic = query is None
+        if automatic:
+            query = self.SEARCH_QUERIES[self._search_index]
         url = "https://github.com/search?" + parse.urlencode({"q": query, "type": "issues", "s": "updated", "o": "desc"})
         document = self.http.get(url)
         results = []
-        roots = embedded_json(document)
+        routes = list(embedded_json(document))
         has_results = False
-        for root in roots:
-            for item in walk(root):
-                if isinstance(item.get("results"), list):
-                    has_results = True
-                raw_url = item.get("url") or item.get("issue_url") or ""
-                if isinstance(raw_url, str) and raw_url.startswith("/"):
-                    raw_url = "https://github.com" + raw_url
-                if isinstance(raw_url, str) and ISSUE_URL.fullmatch(raw_url):
-                    results.append(raw_url)
-                # GitHub search results can carry repository + issue number only.
-                repo = item.get("repo", {}).get("repository", {}) if isinstance(item.get("repo"), dict) else {}
-                owner = repo.get("owner_login")
-                name = repo.get("name")
+        saw_rows = False
+        # Only route payloads contain search results. Unrelated page metadata and
+        # references nested inside a result must not become additional tasks.
+        while routes:
+            route = routes.pop()
+            if not isinstance(route, dict):
+                continue
+            routes.extend(route[key] for key in ("payload", "blackbirdSearchRoute") if key in route)
+            rows = route.get("results")
+            if not isinstance(rows, list):
+                continue
+            if route.get("errors"):
+                raise ConnectorError("GitHub kunde inte slutföra sökfrågan; sökningen behöver kontrolleras.")
+            has_results = True
+            saw_rows = saw_rows or bool(rows)
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                candidates = [item.get("url"), item.get("issue_url")]
+                # Some rows carry repository + issue number instead of a URL.
+                repo = item.get("repo")
+                repository = repo.get("repository") if isinstance(repo, dict) else None
                 number = item.get("number")
-                if owner and name and isinstance(number, int):
-                    candidate = f"https://github.com/{owner}/{name}/issues/{number}"
+                if isinstance(repository, dict) and type(number) is int and number > 0:
+                    owner, name = repository.get("owner_login"), repository.get("name")
+                    if isinstance(owner, str) and isinstance(name, str):
+                        candidates.append(f"https://github.com/{owner}/{name}/issues/{number}")
+                for candidate in candidates:
+                    if not isinstance(candidate, str):
+                        continue
+                    if candidate.startswith("/"):
+                        candidate = "https://github.com" + candidate
                     if ISSUE_URL.fullmatch(candidate):
                         results.append(candidate)
+                        break
         if not has_results:
             raise ConnectorError("GitHubs söksida saknar läsbar sökdata; sökningen behöver kontrolleras.")
+        if saw_rows and not results:
+            raise ConnectorError("GitHubs sökresultat kunde inte läsas tillförlitligt.")
+        if automatic:
+            self._search_index = (self._search_index + 1) % len(self.SEARCH_QUERIES)
         self.last_status = {"configured": True, "status": "connected", "detail": "Offentlig GitHub-sökning fungerar."}
         return list(dict.fromkeys(results))[:limit]
 
@@ -396,13 +430,13 @@ def qualify(issue):
     if issue.get("state") != "OPEN":
         return reject("Uppdraget är inte öppet.")
     if not reward or not re.search(r"bounty|reward|pays?\b|payment|paid\b|belöning|ersättning", combined, re.I):
-        return reject("Ingen uttrycklig ersättning kunde verifieras.", "discovered")
+        return reject("Ingen uttrycklig ersättning kunde verifieras.", "skipped")
     if issue.get("authorAssociation") not in {"OWNER", "MEMBER", "COLLABORATOR"}:
-        return reject("Ersättningen är inte bekräftad av en identifierad maintainer.", "discovered")
+        return reject("Ersättningen är inte bekräftad av en identifierad maintainer.")
     if re.search(r"proposed (?:bounty|reward)|suggested (?:bounty|reward)|bounty proposal|would (?:pay|offer)|could (?:pay|offer)|looking for (?:a )?sponsor|propose.{0,40}(?:bounty|\$)", combined, re.I):
-        return reject("Beloppet verkar vara ett förslag, inte ett betalningslöfte.", "discovered")
+        return reject("Beloppet verkar vara ett förslag, inte ett betalningslöfte.", "skipped")
     if currency == "$":
-        return reject("Belopp finns men dollarvalutan är inte uttryckligen specificerad.", "discovered")
+        return reject("Belopp finns men dollarvalutan är inte uttryckligen specificerad.")
     if issue.get("assignedActors", {}).get("nodes") or issue.get("assignees", {}).get("nodes"):
         return reject("Uppdraget är tilldelat någon annan.")
     labels = " ".join(str(node.get("name", "")) for node in walk(issue.get("labels", {})))

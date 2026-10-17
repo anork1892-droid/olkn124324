@@ -118,9 +118,17 @@ class Engine:
         self.store.log("Scout kontrollerar väntande uppdrag och söker efter nya dokumentationsbounties.")
         count = 0
         failures = 0
+        outcomes = {"qualified": 0, "skipped": 0, "blocked": 0}
         scan_error = None
         checked = set()
         pending = []
+
+        def outcome_summary():
+            labels = (("qualified", "utvalt", "utvalda"), ("skipped", "bortvalt", "bortvalda"),
+                      ("blocked", "blockerat", "blockerade"))
+            details = ", ".join(f"{outcomes[key]} {single if outcomes[key] == 1 else plural}"
+                                for key, single, plural in labels)
+            return f"{count} uppdrag kontrollerades: {details}."
 
         def update_pending(task, **fields):
             if task:
@@ -167,6 +175,8 @@ class Engine:
                 if latest and latest["status"] in {"discovered", "qualified"}:
                     self.store.update_task(task_id, status=candidate["status"], reason=candidate["reason"])
             count += 1
+            if candidate["status"] in outcomes:
+                outcomes[candidate["status"]] += 1
 
         try:
             existing = {task["url"]: task for task in self.store.list_tasks()}
@@ -184,11 +194,14 @@ class Engine:
                     if self._stop.is_set() or len(checked) >= 20:
                         break
                     assess(url)
-            self.store.log(f"Sökning klar: {count} uppdrag kontrollerades. Annonserade belopp räknas inte som intäkter.")
+            message = "Sökning klar: " + outcome_summary()
+            if failures:
+                message += f" {failures} uppdrag kunde inte granskas."
+            self.store.log(message + " Annonserade belopp räknas inte som intäkter.")
         except ConnectorError as exc:
             scan_error = str(exc)
             self._connection("github", {"configured": True, "status": "error", "detail": str(exc)})
-            self.store.log(f"{count} uppdrag kontrollerades. Sökningen pausades: {exc}", level="warning")
+            self.store.log(outcome_summary() + f" Sökningen pausades: {exc}", level="warning")
         except Exception:
             # Untrusted responses must not leak response bodies, credentials, or prompts into logs.
             scan_error = "Ett oväntat svar avbröt granskningen; kontrollera anslutningen."
@@ -201,7 +214,7 @@ class Engine:
                         update_pending(task, reason="Granskningen väntar efter ett fel: " + scan_error + " Ett nytt försök görs vid nästa sökning.")
             interval = self.store.get_settings()["poll_interval_minutes"]
             self._next_scan = time.monotonic() + interval * 60
-            detail = f"{count} uppdrag bedömdes. "
+            detail = outcome_summary() + " "
             if scan_error:
                 detail += "Sökningen avbröts: " + scan_error + " "
             elif failures:
