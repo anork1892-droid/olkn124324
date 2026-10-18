@@ -247,6 +247,7 @@ def validate_delivery(value):
 
 
 class GitHub:
+    MAX_SEARCH_PAGES = 10
     SEARCH_QUERIES = (
         "is:issue is:open no:assignee bounty documentation in:title",
         "is:issue is:open no:assignee bounty readme in:title",
@@ -259,13 +260,15 @@ class GitHub:
     def __init__(self, http=None):
         self.http = http or HTTP(min_interval=3)
         self._search_index = 0
+        self._search_pages = [1] * len(self.SEARCH_QUERIES)
         self.last_status = {"configured": True, "status": "unknown", "detail": "Offentlig GitHub-sökning är ännu inte kontrollerad."}
 
     def search(self, query=None, limit=12):
         automatic = query is None
         if automatic:
             query = self.SEARCH_QUERIES[self._search_index]
-        url = "https://github.com/search?" + parse.urlencode({"q": query, "type": "issues", "s": "updated", "o": "desc"})
+        page = self._search_pages[self._search_index] if automatic else 1
+        url = "https://github.com/search?" + parse.urlencode({"q": query, "type": "issues", "s": "updated", "o": "desc", "p": page})
         document = self.http.get(url)
         results = []
         routes = list(embedded_json(document))
@@ -310,6 +313,9 @@ class GitHub:
         if saw_rows and not results:
             raise ConnectorError("GitHubs sökresultat kunde inte läsas tillförlitligt.")
         if automatic:
+            # Each query walks deeper independently. Empty pages and the bound
+            # restart at recent results; errors above leave the cursor untouched.
+            self._search_pages[self._search_index] = page + 1 if results and page < self.MAX_SEARCH_PAGES else 1
             self._search_index = (self._search_index + 1) % len(self.SEARCH_QUERIES)
         self.last_status = {"configured": True, "status": "connected", "detail": "Offentlig GitHub-sökning fungerar."}
         return list(dict.fromkeys(results))[:limit]

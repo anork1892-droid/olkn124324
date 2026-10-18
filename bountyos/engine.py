@@ -160,6 +160,7 @@ class Engine:
         scan_error = None
         checked = set()
         pending = []
+        discovery_detail = ""
 
         def outcome_summary():
             labels = (("qualified", "utvalt", "utvalda"), ("skipped", "bortvalt", "bortvalda"),
@@ -234,13 +235,19 @@ class Engine:
                     break
                 assess(task["url"])
             if not self._stop.is_set():
-                found = self.github.search()
+                found = list(dict.fromkeys(self.github.search()))
+                known = sum(url in existing for url in found)
+                discovery_detail = f" GitHub gav {len(found)} träffar: {len(found) - known} nya och {known} redan kända."
+                if found and known == len(found):
+                    discovery_detail += " Alla träffar finns redan i appen; Scout fortsätter genom fler resultatsidor automatiskt."
+                elif not found:
+                    discovery_detail += " Den här sökfrågan gav inga träffar på aktuell sida; Scout fortsätter med nästa sökfråga automatiskt."
                 self._connection("github", {"configured": True, "status": "connected", "detail": "GitHubs offentliga sökning fungerar."})
                 for url in found:
                     if self._stop.is_set() or len(checked) >= 20:
                         break
                     assess(url)
-            message = "Sökning klar: " + outcome_summary()
+            message = "Sökning klar: " + outcome_summary() + discovery_detail
             if failures:
                 message += f" {failures} uppdrag kunde inte granskas."
             self.store.log(message + " Annonserade belopp räknas inte som intäkter.")
@@ -263,7 +270,7 @@ class Engine:
             # Alternative/test connectors may not expose a numeric cooldown.
             delay = max(interval * 60, cooldown if isinstance(cooldown, (int, float)) else 0)
             self._next_scan = time.monotonic() + delay
-            detail = outcome_summary() + " "
+            detail = outcome_summary() + discovery_detail + " "
             if scan_error:
                 detail += "Sökningen avbröts: " + scan_error + " "
             elif failures:

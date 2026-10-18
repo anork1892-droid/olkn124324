@@ -50,6 +50,19 @@ class ScanQueueTests(unittest.TestCase):
     def scout(self):
         return next(agent for agent in self.store.list_agents() if agent["id"] == "scout")
 
+    def test_known_results_are_reported_without_reassessing_them(self):
+        task = self.pending(7, status="blocked")
+        self.github.search.return_value = [task["url"]]
+        self.scan()
+        self.github.issue.assert_not_called()
+        self.assertIn("GitHub gav 1 träffar: 0 nya och 1 redan kända.", self.scout()["detail"])
+        self.assertIn("Alla träffar finns redan", self.scout()["detail"])
+
+    def test_empty_search_explains_zero_results(self):
+        self.scan()
+        self.assertIn("GitHub gav 0 träffar", self.scout()["detail"])
+        self.assertIn("nästa sökfråga automatiskt", self.scout()["detail"])
+
     def test_saved_task_is_assessed_before_failing_search(self):
         task = self.pending(7)
         self.github.search.side_effect = ConnectorError("Sökdata saknas")

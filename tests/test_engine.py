@@ -229,6 +229,38 @@ class GitHubParsingTests(unittest.TestCase):
             for qualifier in ("is:issue", "is:open", "no:assignee", "in:title"):
                 self.assertIn(qualifier, query.split())
 
+    def test_search_pages_advance_per_query_and_wrap_at_bound(self):
+        transport = Mock()
+        transport.get.return_value = json.dumps({"payload": {"results": [
+            {"url": "https://github.com/owner/project/issues/7"}]}})
+        github = GitHub(http=transport)
+        github.MAX_SEARCH_PAGES = 2
+        for _ in range(len(github.SEARCH_QUERIES) * 3):
+            github.search()
+        pages = [int(parse_qs(urlsplit(call.args[0]).query)["p"][0])
+                 for call in transport.get.call_args_list]
+        self.assertEqual(pages, [1] * 6 + [2] * 6 + [1] * 6)
+
+    def test_empty_page_resets_and_failure_preserves_deeper_page(self):
+        transport = Mock()
+        transport.get.return_value = json.dumps({"payload": {"results": [
+            {"url": "https://github.com/owner/project/issues/7"}]}})
+        github = GitHub(http=transport)
+        for _ in github.SEARCH_QUERIES:
+            github.search()
+        transport.get.side_effect = [RateLimited("HTTP 429"),
+                                     json.dumps({"payload": {"results": []}})]
+        with self.assertRaises(RateLimited):
+            github.search()
+        github.search()
+        retry_urls = [call.args[0] for call in transport.get.call_args_list[-2:]]
+        self.assertEqual(retry_urls[0], retry_urls[1])
+        self.assertEqual(parse_qs(urlsplit(retry_urls[0]).query)["p"], ["2"])
+        transport.get.side_effect = None
+        for _ in github.SEARCH_QUERIES:
+            github.search()
+        self.assertEqual(parse_qs(urlsplit(transport.get.call_args.args[0]).query)["p"], ["1"])
+
     def test_explicit_search_does_not_change_automatic_rotation(self):
         transport = Mock()
         transport.get.return_value = json.dumps({"payload": {"results": []}})
