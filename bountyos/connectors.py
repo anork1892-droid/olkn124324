@@ -388,17 +388,22 @@ class GitHub:
                 for item in walk(data):
                     if safe_doc_path(item.get("path")):
                         candidates.append(item["path"])
-        except ConnectorError:
-            pass
+        except HTTPFailure as exc:
+            if exc.status_code != 404:
+                raise ConnectorError("Dokumentlistan kunde inte hämtas: " + str(exc)) from None
         documents = {}
         for path in list(dict.fromkeys(candidates))[:10]:
             try:
                 text = self.http.get(f"https://raw.githubusercontent.com/{repo}/{parse.quote(branch, safe='')}/{path}", limit=100_000)
                 documents[path] = text
-            except ConnectorError:
-                continue
+            except HTTPFailure as exc:
+                if exc.status_code == 404:
+                    continue
+                raise ConnectorError("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
+            except ConnectorError as exc:
+                raise ConnectorError("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
         if not documents:
-            raise ConnectorError("Inga befintliga dokument kunde hämtas som underlag.")
+            raise ConnectorError("Inga stödda dokument hittades i målprojektet. Kontrollerade sökvägar: " + ", ".join(list(dict.fromkeys(candidates))[:10]))
         return {"repo": repo, "branch": branch, "files": documents}
 
 
@@ -451,6 +456,16 @@ def advertised_reward(text):
     return None, ""
 
 
+def original_issue_reference(body):
+    """Only an explicitly labelled source section denotes a repost, not any link."""
+    sections = re.findall(r"^#{1,6}[ \t]+[^\n]*(?:\bSource URL\b|\bOriginal URL\b|原始链接)[^\n]*\n(.*?)(?=^#{1,6}[ \t]|\Z)", body, re.I | re.M | re.S)
+    if not sections:
+        return None
+    urls = re.findall(r"https?://[^\s<>\[\]()]+", "\n".join(sections))
+    unique = list(dict.fromkeys(urls))
+    return unique[0] if len(unique) == 1 and ISSUE_URL.fullmatch(unique[0]) else ""
+
+
 def qualify(issue):
     title, body = issue.get("title", ""), issue.get("body", "")
     combined = title + "\n" + body
@@ -460,6 +475,12 @@ def qualify(issue):
     def reject(reason, status="blocked"):
         result.update(status=status, reason=reason)
         return result
+    original = original_issue_reference(body)
+    if original is not None:
+        if original and original != issue["url"]:
+            result["original_issue_url"] = original
+            return reject("Återpublicerad annons. Originalärendet granskas separat: " + original, "skipped")
+        return reject("Annonsens originalkälla är oklar eller saknar en direktlänk till ett annat GitHub-ärende.")
     if issue.get("state") != "OPEN":
         return reject("Uppdraget är inte öppet.")
     if not reward or not re.search(r"bounty|reward|pays?\b|payment|paid\b|belöning|ersättning", combined, re.I):
