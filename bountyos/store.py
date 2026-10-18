@@ -17,10 +17,11 @@ import uuid
 
 DEFAULT_SETTINGS = {
     "running": False,
+    "search_enabled": True,
     "max_agents": 2,
     "autoscale": False,
     "auto_submit": False,
-    "poll_interval_minutes": 30,
+    "poll_interval_minutes": 1,
     "daily_budget_sek": 0,
 }
 TASK_COLUMNS = {
@@ -71,6 +72,9 @@ class Store:
             """)
             for key, value in DEFAULT_SETTINGS.items():
                 conn.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)", (key, json.dumps(value)))
+            if not conn.execute("SELECT 1 FROM imports WHERE name='automatic-search-v1'").fetchone():
+                conn.execute("UPDATE settings SET value='1' WHERE key='poll_interval_minutes' AND value='30'")
+                conn.execute("INSERT INTO imports(name,imported_at) VALUES (?,?)", ('automatic-search-v1', utcnow()))
             # This version has no paid provider, including when opening an older database.
             conn.execute("UPDATE settings SET value='0' WHERE key='daily_budget_sek'")
 
@@ -105,12 +109,12 @@ class Store:
         if unknown:
             raise ValueError("Okända inställningar: " + ", ".join(sorted(unknown)))
         for key, value in changes.items():
-            if key in {"running", "autoscale", "auto_submit"} and type(value) is not bool:
+            if key in {"running", "search_enabled", "autoscale", "auto_submit"} and type(value) is not bool:
                 raise ValueError(f"{key} måste vara true eller false.")
             if key == "max_agents" and (type(value) is not int or not 1 <= value <= 10):
                 raise ValueError("max_agents måste vara ett heltal mellan 1 och 10.")
-            if key == "poll_interval_minutes" and (type(value) is not int or not 5 <= value <= 1440):
-                raise ValueError("poll_interval_minutes måste vara ett heltal mellan 5 och 1440.")
+            if key == "poll_interval_minutes" and (type(value) is not int or not 1 <= value <= 1440):
+                raise ValueError("poll_interval_minutes måste vara ett heltal mellan 1 och 1440.")
             if key == "daily_budget_sek" and (type(value) not in {int, float} or value != 0):
                 raise ValueError("Driftbudgeten är låst till 0 kr. Betalda API-anrop stöds inte.")
         with self._connection(write=True) as conn:

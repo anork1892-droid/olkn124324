@@ -27,7 +27,8 @@ class SettingsUpdate(BaseModel):
     max_agents: StrictInt | None = Field(default=None, ge=1, le=10)
     autoscale: StrictBool | None = None
     auto_submit: StrictBool | None = None
-    poll_interval_minutes: StrictInt | None = Field(default=None, ge=5, le=1440)
+    poll_interval_minutes: StrictInt | None = Field(default=None, ge=1, le=1440)
+    search_enabled: StrictBool | None = None
     daily_budget_sek: StrictInt | None = Field(default=None, ge=0, le=0)
 
 
@@ -117,6 +118,8 @@ def create_app(data_dir: str | Path | None = None, engine_factory=None) -> FastA
             raise ValueError("Inställningar får inte vara null.")
         settings = await invoke(request.app.state.store.update_settings, changes)
         await invoke(request.app.state.store.log, "Inställningar sparade. Driftbudgeten är fortfarande 0 kr.")
+        if settings["search_enabled"] and (changes.get("search_enabled") is True or "poll_interval_minutes" in changes):
+            await invoke(request.app.state.engine.scan_now)
         return {"ok": True, "settings": settings}
 
     @application.post("/api/control")
@@ -124,9 +127,9 @@ def create_app(data_dir: str | Path | None = None, engine_factory=None) -> FastA
         if payload.action not in {"start", "pause"}:
             raise ValueError("action måste vara start eller pause.")
         running = payload.action == "start"
-        await invoke(request.app.state.store.update_settings, {"running": running})
-        await invoke(request.app.state.store.log, "Automatisk körning startad." if running else "Automatisk körning pausad; ett redan påbörjat steg kan slutföras.")
-        if running:
+        settings = await invoke(request.app.state.store.update_settings, {"running": running})
+        await invoke(request.app.state.store.log, "Arbetsagenter startade." if running else "Arbetsagenter pausade; ett redan påbörjat steg kan slutföras. Sökningen styrs separat.")
+        if running and settings["search_enabled"]:
             await invoke(request.app.state.engine.scan_now)
         return {"ok": True, "running": running}
 

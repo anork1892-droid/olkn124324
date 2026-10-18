@@ -66,6 +66,7 @@
   const settings = () => state?.settings || {};
   const metrics = () => state?.metrics || {};
   const isRunning = () => Boolean(settings().running);
+  const searchEnabled = () => settings().search_enabled !== false;
   const aiReady = () => ["ready", "connected", "ok", "available", "healthy"].includes(String(state?.connections?.ai?.status || "").toLowerCase());
   const workingStatuses = new Set(["working", "in_progress", "executing", "solving", "researching", "evaluating", "reviewing", "review"]);
   const availableTasks = () => tasks().filter(task => !["paid", "rejected", "skipped", "closed", "expired"].includes(task.status));
@@ -78,13 +79,16 @@
     const label = !known && currency.includes("$") ? (compact ? "$ · valuta okänd" : "$ (dollarvaluta ospecificerad)") : compact && !known ? "· obekr." : currency;
     return `${money(task.reward_amount, number(task.reward_amount) % 1 ? 2 : 0)} ${escapeHTML(label)}`;
   };
-  const displayAgentStatus = agent => !isRunning() && ["idle", "ready"].includes(agent.status) ? "Pausad" : agentStatuses[agent.status] || String(agent.status || "Väntar");
+  const displayAgentStatus = agent => !(agent.role === "scout" ? searchEnabled() : isRunning()) && ["idle", "ready"].includes(agent.status) ? "Pausad" : agentStatuses[agent.status] || String(agent.status || "Väntar");
   const roleName = agent => roleNames[agent.role] || String(agent.role || "Agent");
   const agentTaskText = agent => {
     if (agent.role === "scout" || agent.id === "scout") {
-      if (agent.detail) return agent.detail;
       if (["scouting", "scanning", "searching"].includes(agent.status)) return "Söker efter uppdrag och kontrollerar vilka som går att utföra.";
-      return isRunning() ? `Söker automatiskt var ${number(settings().poll_interval_minutes) || 30}:e minut.` : "Automatiska sökningar är pausade.";
+      if (!searchEnabled()) return "Automatiska sökningar är pausade. Starta sökningen för att fortsätta.";
+      const due = Date.parse(agent.next_scan_at || "");
+      const seconds = Number.isFinite(due) ? Math.max(0, Math.ceil((due - Date.now()) / 1000)) : 0;
+      const next = seconds ? `Nästa automatiska sökning om ${Math.floor(seconds / 60)} min ${seconds % 60} s.` : "Nästa automatiska sökning startar strax.";
+      return next + (agent.detail ? " " + agent.detail : "");
     }
     const assignedTask = tasks().find(task => String(task.id) === String(agent.task));
     return assignedTask?.title || agent.task || agent.detail || (isRunning() ? "Väntar på nästa uppgift." : "Arbetet startar när du aktiverar agenterna.");
@@ -131,7 +135,7 @@
 
   function renderSystemStatus() {
     const running = isRunning();
-    const text = running ? (aiReady() ? "Systemet är igång" : "Sökning är igång") : "Automatik pausad";
+    const text = running ? "Arbetsagenterna är igång" : searchEnabled() ? "Automatisk sökning på" : "Automatik pausad";
     $("#system-indicator").innerHTML = `<span class="status-dot"></span>${text}`;
     $("#system-indicator").className = `system-indicator${running ? " running" : ""}`;
     $("#sidebar-status").textContent = aiReady() ? "Lokal AI ansluten" : "Lokal AI behöver anslutas";
@@ -139,7 +143,7 @@
   }
 
   function controls(includeScan = true) {
-    return `<div class="heading-actions">${includeScan ? `<button class="button button-secondary" data-action="scan"${operationBusy ? " disabled" : ""}>${icon("search")}Sök uppdrag</button>` : ""}<button class="button ${isRunning() ? "button-secondary" : "button-primary"}" data-action="control"${operationBusy ? " disabled" : ""}>${icon(isRunning() ? "pause" : "play")}${isRunning() ? "Pausa agenter" : "Starta agenter"}</button></div>`;
+    return `<div class="heading-actions">${includeScan ? `<button class="button button-secondary" data-action="scan"${operationBusy ? " disabled" : ""}>${icon("search")}Sök nu</button><button class="button button-secondary" data-action="search-control"${operationBusy ? " disabled" : ""}>${icon(searchEnabled() ? "pause" : "play")}${searchEnabled() ? "Pausa sökning" : "Starta sökning"}</button>` : ""}<button class="button ${isRunning() ? "button-secondary" : "button-primary"}" data-action="control"${operationBusy ? " disabled" : ""}>${icon(isRunning() ? "pause" : "play")}${isRunning() ? "Pausa arbete" : "Starta arbete"}</button></div>`;
   }
 
   function heading(title, description, actions = "", eyebrow = "DIN ARBETSPLATS") {
@@ -240,7 +244,7 @@
   function settingsView() {
     if (!settingsDraft || !settingsDirty) settingsDraft = { ...settings() };
     const draft = settingsDraft;
-    return `${heading('Din arbetsplats. <em>Dina villkor.</em>', "Ställ in kapacitet, anslutningar och hur självständigt agenterna arbetar.", "", "INSTÄLLNINGAR")}<div class="content-grid"><form id="settings-form" class="panel"><div class="panel-heading"><h2 class="panel-title">Arbetsflöde & kapacitet</h2>${icon("settings")}</div><div class="form-section"><h3>En kostnadsfri start</h3><p class="settings-description">Agenterna använder Ollama på din egen dator. Betalda AI-anrop är avstängda med ditt valda kostnadstak.</p><div class="budget-summary"><div><strong>0 kr</strong><small>/ dygn</small></div><span>Fast kostnadstak</span></div></div><div class="form-section"><div class="form-field"><div><label class="form-label" for="max-agents">Samtidiga agenter</label><p class="form-help">Högsta antal arbetsagenter samtidigt. Anpassas även till datorns kapacitet.</p></div><div class="range-control"><input id="max-agents-range" type="range" min="1" max="10" step="1" value="${number(draft.max_agents) || 1}" aria-label="Antal samtidiga agenter"/><input class="input-number" id="max-agents" name="max_agents" type="number" min="1" max="10" step="1" required value="${number(draft.max_agents) || 1}" /></div></div><div class="form-field"><div><label class="form-label" for="autoscale">Väx med resultaten</label><p class="form-help">Anpassa automatiskt antalet arbetande agenter upp till ditt tak.</p></div><label class="switch"><input id="autoscale" name="autoscale" type="checkbox"${draft.autoscale ? " checked" : ""}/><span class="switch-track"></span></label></div></div><div class="form-section"><div class="form-field"><div><label class="form-label" for="auto-submit">Skicka in färdiga leveranser</label><p class="form-help">Låt granskade leveranser skickas automatiskt via ditt anslutna GitHub-konto. Utan anslutning sparas arbetet lokalt.</p></div><label class="switch"><input id="auto-submit" name="auto_submit" type="checkbox"${draft.auto_submit ? " checked" : ""}/><span class="switch-track"></span></label></div><div class="form-field"><div><label class="form-label" for="poll-interval">Sökintervall i minuter</label><p class="form-help">Hur ofta systemet letar efter nya möjligheter.</p></div><input class="input-number" id="poll-interval" name="poll_interval_minutes" type="number" min="5" max="1440" step="1" required value="${number(draft.poll_interval_minutes) || 30}" /></div></div><div class="settings-actions"><span id="settings-save-note">${settingsDirty ? "Du har osparade ändringar." : "Ändringar gäller efter att du sparat."}</span><button class="button button-primary" type="submit"${operationBusy ? " disabled" : ""}>${icon("check")}Spara inställningar</button></div></form><div class="right-column" style="display:flex"><section class="panel"><div class="panel-heading"><h2 class="panel-title">Anslutningar</h2><button class="text-link" data-action="connections"${operationBusy ? " disabled" : ""}>${icon("refresh")}Kontrollera</button></div>${connectionCard("GitHub · sökning", state.connections?.github, "github")}${connectionCard("GitHub · leveranser", state.connections?.submission, "send")}${connectionCard("Ollama · lokal AI", state.connections?.ai, "spark")}</section><div class="hint-card"><h3>Din dator är motorn</h3>Körs när den här datorn är igång. Inbetalningar registreras manuellt. Modell och GitHub-åtkomst ställs in i serverns lokala miljökonfiguration; inga hemligheter visas här.</div></div></div>`;
+    return `${heading('Din arbetsplats. <em>Dina villkor.</em>', "Ställ in kapacitet, anslutningar och hur självständigt agenterna arbetar.", "", "INSTÄLLNINGAR")}<div class="content-grid"><form id="settings-form" class="panel"><div class="panel-heading"><h2 class="panel-title">Arbetsflöde & kapacitet</h2>${icon("settings")}</div><div class="form-section"><h3>En kostnadsfri start</h3><p class="settings-description">Agenterna använder Ollama på din egen dator. Betalda AI-anrop är avstängda med ditt valda kostnadstak.</p><div class="budget-summary"><div><strong>0 kr</strong><small>/ dygn</small></div><span>Fast kostnadstak</span></div></div><div class="form-section"><div class="form-field"><div><label class="form-label" for="max-agents">Samtidiga agenter</label><p class="form-help">Högsta antal arbetsagenter samtidigt. Anpassas även till datorns kapacitet.</p></div><div class="range-control"><input id="max-agents-range" type="range" min="1" max="10" step="1" value="${number(draft.max_agents) || 1}" aria-label="Antal samtidiga agenter"/><input class="input-number" id="max-agents" name="max_agents" type="number" min="1" max="10" step="1" required value="${number(draft.max_agents) || 1}" /></div></div><div class="form-field"><div><label class="form-label" for="autoscale">Väx med resultaten</label><p class="form-help">Anpassa automatiskt antalet arbetande agenter upp till ditt tak.</p></div><label class="switch"><input id="autoscale" name="autoscale" type="checkbox"${draft.autoscale ? " checked" : ""}/><span class="switch-track"></span></label></div></div><div class="form-section"><div class="form-field"><div><label class="form-label" for="auto-submit">Skicka in färdiga leveranser</label><p class="form-help">Låt granskade leveranser skickas automatiskt via ditt anslutna GitHub-konto. Utan anslutning sparas arbetet lokalt.</p></div><label class="switch"><input id="auto-submit" name="auto_submit" type="checkbox"${draft.auto_submit ? " checked" : ""}/><span class="switch-track"></span></label></div><div class="form-field"><div><label class="form-label" for="poll-interval">Sökintervall i minuter</label><p class="form-help">Sökningen startar med programmet. Pausen mellan sökomgångar; källans väntetider kan förlänga den.</p></div><input class="input-number" id="poll-interval" name="poll_interval_minutes" type="number" min="1" max="1440" step="1" required value="${number(draft.poll_interval_minutes) || 1}" /></div></div><div class="settings-actions"><span id="settings-save-note">${settingsDirty ? "Du har osparade ändringar." : "Ändringar gäller efter att du sparat."}</span><button class="button button-primary" type="submit"${operationBusy ? " disabled" : ""}>${icon("check")}Spara inställningar</button></div></form><div class="right-column" style="display:flex"><section class="panel"><div class="panel-heading"><h2 class="panel-title">Anslutningar</h2><button class="text-link" data-action="connections"${operationBusy ? " disabled" : ""}>${icon("refresh")}Kontrollera</button></div>${connectionCard("GitHub · sökning", state.connections?.github, "github")}${connectionCard("GitHub · leveranser", state.connections?.submission, "send")}${connectionCard("Ollama · lokal AI", state.connections?.ai, "spark")}</section><div class="hint-card"><h3>Din dator är motorn</h3>Körs när den här datorn är igång. Inbetalningar registreras manuellt. Modell och GitHub-åtkomst ställs in i serverns lokala miljökonfiguration; inga hemligheter visas här.</div></div></div>`;
   }
 
   function renderView() {
@@ -305,7 +309,7 @@
   async function mutate(path, payload, successMessage, method = "POST", onSuccess = null) {
     if (operationBusy) return false;
     operationBusy = true;
-    document.querySelectorAll('[data-action="scan"], [data-action="control"], [data-action="connections"], #settings-form button[type="submit"], #payment-form button[type="submit"], [data-action="retry"]').forEach(button => { button.disabled = true; });
+    document.querySelectorAll('[data-action="scan"], [data-action="search-control"], [data-action="control"], [data-action="connections"], #settings-form button[type="submit"], #payment-form button[type="submit"], [data-action="retry"]').forEach(button => { button.disabled = true; });
     try {
       await api(path, { method, body: JSON.stringify(payload) });
       if (onSuccess) onSuccess();
@@ -363,7 +367,8 @@
     const actionButton = event.target.closest("[data-action]");
     if (!actionButton || actionButton.disabled) return;
     const action = actionButton.dataset.action;
-    if (action === "control") await mutate("/api/control", { action: isRunning() ? "pause" : "start" }, isRunning() ? "Agenterna har pausats." : "Systemet har startats. Följ arbetet i aktivitetsflödet.");
+    if (action === "control") await mutate("/api/control", { action: isRunning() ? "pause" : "start" }, isRunning() ? "Arbetsagenterna har pausats. Sökningen styrs separat." : "Arbetsagenterna har startats. Följ arbetet i aktivitetsflödet.");
+    else if (action === "search-control") await mutate("/api/settings", { search_enabled: !searchEnabled() }, searchEnabled() ? "Automatisk sökning pausad. En pågående omgång får slutföras." : "Automatisk sökning startad.", "PUT");
     else if (action === "scan") await mutate("/api/scan", {}, "Sökningen är startad. Nya uppdrag visas automatiskt.");
     else if (action === "connections") await mutate("/api/connections/check", {}, "Anslutningarna har kontrollerats.");
     else if (action === "refresh") await refreshState(true);

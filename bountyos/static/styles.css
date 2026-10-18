@@ -8,3 +8,5 @@
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 
 .task-assessment{display:block;margin-top:6px;color:var(--subtle);font-size:.85em;line-height:1.5;overflow-wrap:anywhere}
+
+@media(max-width:850px){.heading-actions{flex-wrap:wrap}}

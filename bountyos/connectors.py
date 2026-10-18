@@ -124,6 +124,10 @@ class HTTP:
             self._blocked_until = max(self._blocked_until, self.clock() + min(3600, max(30, seconds)))
             self._last_failure = reason
 
+    def retry_after_seconds(self):
+        with self._lock:
+            return max(0.0, self._blocked_until - self.clock())
+
     def json(self, url, **kwargs):
         try:
             return json.loads(self.get(url, **kwargs))

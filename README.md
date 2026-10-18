@@ -13,15 +13,15 @@ En lokal webbapp som samlar bounties, fördelar dokumentationsarbete mellan agen
 3. Starta Ollama. Öppna ett nytt Terminal- eller PowerShell-fönster och kör `ollama pull qwen2.5-coder:3b`. Vänta tills nedladdningen är klar.
 4. Dubbelklicka på `install-windows.cmd`. Installationen skapar en lokal Python-miljö och sätter **en arbetsagent** vid första installationen. Befintlig databas och inställningar bevaras om du kör installationen igen.
 5. Dubbelklicka på `start-windows.cmd`. Dashboarden öppnas automatiskt när servern är redo. Windows-starten väljer modellen `qwen2.5-coder:3b` och tillåter upp till 30 minuter för ett modellsvar på en långsam processor. Dina befintliga miljövariabler har företräde.
-6. Välj **Inställningar → Kontrollera** och kontrollera att Ollama är ansluten. Behåll en arbetsagent till att börja med. Klicka sedan **Sök uppdrag** för att kontrollera sökningen; GitHub-inlämning kopplas separat.
+6. Välj **Inställningar → Kontrollera** och kontrollera att Ollama är ansluten. Behåll en arbetsagent till att börja med. Sökningen startar automatiskt. Välj **Starta arbete** när Ollama är ansluten för att även utföra utvalda uppdrag; GitHub-inlämning kopplas separat.
 
 Låt Ollama och BountyOS terminalfönster vara igång. Datorn behöver vara vaken för att arbetet ska fortsätta; dashboardfliken kan stängas. En 3B-modell tar mindre minne men kan behöva avvisa fler svåra uppdrag. Hastighet och faktisk leveranskvalitet måste prövas på din dator. Windows-kommandofilerna har granskats men inte körts i en riktig Windows-miljö här.
 
 #### Om Scout väntar och uppdragen står som Hittat
 
-Scout hittar och granskar uppdrag med det sökintervall du valt. **Hittat** betyder att ett uppdrag är registrerat men ännu inte utvalt för arbete. Arbetsagenten börjar först när granskningen ger statusen **Utvalt** och den lokala modellen är ansluten. Klicka på uppdraget och läs **Senaste bedömning** för orsaken; Scouts kort visar resultatet av senaste sökningen och eventuella fel.
+Scout börjar söka när programmet startar och söker igen en minut efter varje avslutad omgång som standard. Sökningen fungerar även när arbetsagenterna är pausade eller Ollama inte är ansluten. GitHubs väntetider kan förlänga pausen. Nästa automatiska sökning visas på Scouts kort. Du kan välja Pausa sökning, Starta sökning eller Sök nu; en paus sparas mellan omstarter. Sökintervallet kan ändras i Inställningar. Äldre installationers standardintervall på 30 minuter uppdateras en gång till en minut; andra valda intervall bevaras. **Hittat** betyder att ett uppdrag är registrerat men ännu inte utvalt för arbete. Arbetsagenten börjar först när granskningen ger statusen **Utvalt** och den lokala modellen är ansluten. Klicka på uppdraget och läs **Senaste bedömning** för orsaken; Scouts kort visar resultatet av senaste sökningen och eventuella fel.
 
-Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel visas på uppdraget och prövas igen vid nästa sökning. GitHubs väntetider respekteras. Källor som bara är programsidor behöver en direktlänk till ett enskilt GitHub-ärende för automatisk granskning. Klicka **Sök uppdrag** för att starta en kontroll nu.
+Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel visas på uppdraget och prövas igen vid nästa sökning. GitHubs väntetider respekteras. Källor som bara är programsidor behöver en direktlänk till ett enskilt GitHub-ärende för automatisk granskning. Klicka **Sök nu** för att starta en kontroll nu.
 
 Sökningen växlar mellan riktade sökningar efter dokumentation i ärendets titel och en bounty i titeln eller en bounty-etikett. Enbart omnämnanden i beskrivningen eller kommentarer räcker inte för en träff. Uppdrag utan verifierbart belopp eller med föreslagen belöning blir **Bortvalt**. Oklara betalningsvillkor, reservationer eller arbete utanför agentens stöd blir **Blockerat**. Dessa uppdrag ligger kvar med en förklaring men granskas inte om vid varje sökning. Om uppdragsgivaren ändrar villkoren kan du öppna uppdraget och välja **Försök igen**. Sökresultatet och Scouts kort visar hur många uppdrag som valdes ut, valdes bort eller blockerades.
 
@@ -61,7 +61,7 @@ Kräver Python 3.11 eller senare och Bash (Linux, macOS eller WSL). Kör från p
 ./scripts/start.sh
 ```
 
-Webbservern lyssnar lokalt på port 8787. Den startar pausad första gången. Öppna dashboarden i en webbläsare på samma dator. Inställningar och uppdrag lagras i `data/`, som inte ska checkas in i Git.
+Webbservern lyssnar lokalt på port 8787. Sökningen startar automatiskt; arbetsagenterna aktiveras separat med Starta arbete. Öppna dashboarden i en webbläsare på samma dator. Inställningar och uppdrag lagras i `data/`, som inte ska checkas in i Git.
 
 Installationsskriptet använder de låsta versionerna i `requirements.lock`. Det använder `uv` om det finns och annars Python venv/pip. En omstart återanvänder befintlig databas.
 
@@ -112,7 +112,7 @@ Dashboarden börjar på 0 kr och saknar simulerade intäkter. Ett annonserat bel
 
 ## Körning under dagen
 
-Låt `start-windows.cmd` eller `scripts/start.sh` vara igång på datorn. Dashboardfliken kan stängas medan bakgrundstjänsten fortsätter arbeta. Paus stoppar tilldelningen av nya uppdrag. Vid datorvila, avstängning eller avslutad process arbetar inga agenter. För automatisk omstart kan kommandot läggas i datorns tjänstehanterare; konfigurera samma arbetskatalog, miljövariabler och beständiga `data/`-katalog.
+Låt `start-windows.cmd` eller `scripts/start.sh` vara igång på datorn. Dashboardfliken kan stängas medan bakgrundstjänsten fortsätter arbeta. Pausa arbete stoppar tilldelningen av nya uppdrag. Pausa sökning stoppar nya sökomgångar när en pågående omgång är klar. Vid datorvila, avstängning eller avslutad process arbetar inga agenter. För automatisk omstart kan kommandot läggas i datorns tjänstehanterare; konfigurera samma arbetskatalog, miljövariabler och beständiga `data/`-katalog.
 
 Webbservern binder till loopback och är avsedd för en användare på samma dator. Exponera den inte publikt som en fleranvändartjänst; inloggning och kontoisolering ingår inte.
 

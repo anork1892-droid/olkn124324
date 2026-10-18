@@ -87,7 +87,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(settings["daily_budget_sek"], 0)
         self.store.update_settings({"daily_budget_sek": 0, "max_agents": 3})
         self.assertEqual(Store(self.tmp.name).get_settings()["max_agents"], 3)
-        for changes in ({"max_agents": 11}, {"max_agents": True}, {"poll_interval_minutes": 4}, {"auto_submit": "true"}, {"paid_provider": "remote"}):
+        for changes in ({"max_agents": 11}, {"max_agents": True}, {"poll_interval_minutes": 0}, {"auto_submit": "true"}, {"paid_provider": "remote"}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.store.update_settings(changes)
 

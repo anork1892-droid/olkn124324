@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from .connectors import (ConnectorError, GitHub, GitHubSubmitter, Ollama, RateLimited, embedded_json,
                          issue_parts, qualify, validate_delivery, walk)
@@ -258,14 +259,18 @@ class Engine:
                     if task["url"] not in checked:
                         update_pending(task, reason="Granskningen väntar efter ett fel: " + scan_error + " Ett nytt försök görs vid nästa sökning.")
             interval = self.store.get_settings()["poll_interval_minutes"]
-            self._next_scan = time.monotonic() + interval * 60
+            cooldown = self.github.http.retry_after_seconds()
+            # Alternative/test connectors may not expose a numeric cooldown.
+            delay = max(interval * 60, cooldown if isinstance(cooldown, (int, float)) else 0)
+            self._next_scan = time.monotonic() + delay
             detail = outcome_summary() + " "
             if scan_error:
                 detail += "Sökningen avbröts: " + scan_error + " "
             elif failures:
                 detail += f"{failures} uppdrag kunde inte granskas. Läs Senaste bedömning på uppdragen. "
-            detail += f"Söker automatiskt var {interval}:e minut när agenterna är startade."
-            self.store.set_agent("scout", status="idle", task=None, detail=detail)
+            detail += f"Automatisk sökning fortsätter efter {interval} minut(er), eller när källans väntetid är slut."
+            self.store.set_agent("scout", status="idle", task=None, detail=detail,
+                                 next_scan_at=(datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat())
             self._scan_lock.release()
 
     def _worker_limit(self, settings):
@@ -282,16 +287,16 @@ class Engine:
         while not self._stop.wait(1):
             try:
                 settings = self.store.get_settings()
+                now = time.monotonic()
+                if settings["search_enabled"] and now >= self._next_scan:
+                    self.scan_now()
                 if not settings["running"]:
                     continue
-                now = time.monotonic()
                 if now >= self._next_probe:
                     self.check_connections()
                 settings = self.store.get_settings()
                 if not settings["running"] or self._stop.is_set():
                     continue
-                if now >= self._next_scan:
-                    self.scan_now()
                 if now >= self._next_submission_check:
                     self._poll_submissions()
                     self._next_submission_check = time.monotonic() + 900
