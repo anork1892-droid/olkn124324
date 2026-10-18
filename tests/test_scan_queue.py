@@ -135,7 +135,7 @@ class ScanQueueTests(unittest.TestCase):
             ({"title": "Coordination thread", "body": "Documentation updates and status notes."}, "skipped"),
             ({"body": "Suggested bounty: 25 USD for the README clarification."}, "skipped"),
             ({"authorAssociation": "UNKNOWN"}, "blocked"),
-            ({"title": "README bounty $25", "body": "We pay $25 for the README clarification."}, "blocked"),
+            ({"title": "Bounty $25: fix compiler exception", "body": "We pay $25 for the code fix."}, "blocked"),
         ]
         tasks = [self.pending(number) for number in range(1, len(cases) + 1)]
         fixtures = {task["url"]: issue(url=task["url"], number=number, **changes)

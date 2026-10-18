@@ -25,6 +25,10 @@ Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel 
 
 Sökningen växlar mellan riktade sökningar efter dokumentation i ärendets titel och en bounty i titeln eller en bounty-etikett. Enbart omnämnanden i beskrivningen eller kommentarer räcker inte för en träff. Uppdrag utan verifierbart belopp eller med föreslagen belöning blir **Bortvalt**. Oklara betalningsvillkor, reservationer eller arbete utanför agentens stöd blir **Blockerat**. Dessa uppdrag ligger kvar med en förklaring men granskas inte om vid varje sökning. Om uppdragsgivaren ändrar villkoren kan du öppna uppdraget och välja **Försök igen**. Sökresultatet och Scouts kort visar hur många uppdrag som valdes ut, valdes bort eller blockerades.
 
+En annons med exempelvis `$25` kan väljas ut om resten av granskningen godkänns. Appen visar beloppet som `$` med ospecificerad dollarvaluta och antar ingen växelkurs eller USD. Uppdragsgivarens projektroll kontrolleras även i de senaste kommentarerna som GitHub visar för samma ärende. Saknad rollinformation skiljs från en uttrycklig roll som inte bekräftar projektansvar. Ett botnamn eller en bounty-etikett bevisar inte vem som ansvarar för betalningen.
+
+Vid uppdatering återköas tidigare obearbetade uppdrag som stoppades av de gamla valuta- eller maintainerreglerna för en ny kontroll. En färsk granskning avgör om de går att utföra; de blir inte direkt utvalda. Sparade leveranser och uppdrag som redan har påbörjats eller skickats in återköas inte av denna rättning.
+
 Uppdatera från den första Windows-versionen: stoppa BountyOS med Ctrl+C i terminalfönstret, packa upp den senaste ZIP-filen separat och kopiera dess mapp `bountyos` till din befintliga programmapp. Välj att ersätta filerna. Dina mappar `data` och `.venv` behålls. Starta sedan med den befintliga `start-windows.cmd` och uppdatera webbläsaren med Ctrl+F5. Denna rättning kräver inga nya paket eller modellnedladdningar.
 
 #### Om GitHub ger CERTIFICATE_VERIFY_FAILED

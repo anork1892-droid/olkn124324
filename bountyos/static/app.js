@@ -75,7 +75,7 @@
     if (task.reward_amount == null) return escapeHTML(compact ? "Se villkor" : task.advertised_reward_description || "Ej bekräftad");
     const currency = String(task.reward_currency || "valuta saknas");
     const known = /^[A-Z]{3}$/.test(currency);
-    const label = compact && !known ? (currency.includes("$") ? "$ · obekr." : "· obekr.") : currency;
+    const label = !known && currency.includes("$") ? (compact ? "$ · valuta okänd" : "$ (dollarvaluta ospecificerad)") : compact && !known ? "· obekr." : currency;
     return `${money(task.reward_amount, number(task.reward_amount) % 1 ? 2 : 0)} ${escapeHTML(label)}`;
   };
   const displayAgentStatus = agent => !isRunning() && ["idle", "ready"].includes(agent.status) ? "Pausad" : agentStatuses[agent.status] || String(agent.status || "Väntar");

@@ -42,8 +42,7 @@ class QualifierTests(unittest.TestCase):
     def test_no_payout_for_proposed_or_unconfirmed_amount(self):
         for change, status, reason in [
             ({"body": "Suggested bounty: 25 USD"}, "skipped", "förslag"),
-            ({"authorAssociation": "NONE"}, "blocked", "maintainer"),
-            ({"title": "Docs bounty $25", "body": "Pays $25 after merge"}, "blocked", "dollarvalutan"),
+            ({"authorAssociation": "NONE"}, "blocked", "GitHub-roll"),
             ({"title": "Documentation request", "body": "Please help"}, "skipped", "ersättning"),
         ]:
             with self.subTest(change=change):
@@ -52,10 +51,49 @@ class QualifierTests(unittest.TestCase):
                 self.assertIn(reason, task["reason"])
                 self.assertFalse(task["source_facts"]["reward_verified_paid"])
 
+    def test_unspecified_dollar_currency_can_qualify_without_implying_usd_or_payment(self):
+        task = qualify(issue(title="Docs bounty $25", body="Pays $25 after the README clarification is accepted."))
+        self.assertEqual(task["status"], "qualified")
+        self.assertEqual((task["reward_amount"], task["reward_currency"]), (25, "$"))
+        self.assertFalse(task["source_facts"]["reward_currency_explicit"])
+        self.assertFalse(task["source_facts"]["reward_verified_paid"])
+        self.assertIn("Dollarvalutan är ospecificerad", task["reason"])
+
+    def test_dollar_amount_does_not_bypass_other_eligibility_checks(self):
+        base = {"title": "README bounty $25", "body": "Pays $25 after the README clarification is accepted."}
+        for change, expected in [
+            ({"authorAssociation": "UNKNOWN"}, "blocked"),
+            ({"state": "CLOSED"}, "blocked"),
+            ({"assignedActors": {"nodes": [{"login": "someone"}]}}, "blocked"),
+            ({"labels": {"nodes": [{"name": "claimed"}]}}, "blocked"),
+            ({"linkedPullRequests": {"nodes": [{"state": "OPEN"}]}}, "blocked"),
+            ({"timelineItems": {"pageInfo": {"hasNextPage": True}}}, "blocked"),
+            ({"body": "Pays $25. Comment /attempt first."}, "blocked"),
+            ({"title": "Bounty $25: fix compiler exception", "body": "Pays $25 for the code fix."}, "blocked"),
+            ({"body": "Suggested bounty: $25 for README clarification."}, "skipped"),
+        ]:
+            with self.subTest(change=change):
+                task = qualify(issue(**(base | change)))
+                self.assertEqual(task["status"], expected)
+                self.assertEqual(task["reward_currency"], "$")
+                self.assertFalse(task["source_facts"]["reward_verified_paid"])
+
     def test_incidental_bounty_discussion_is_not_pending_work(self):
         task = qualify(issue(title="Agent coordination log", body="Discuss documentation and future bounty ideas."))
         self.assertEqual(task["status"], "skipped")
         self.assertIsNone(task["reward_amount"])
+
+    def test_unknown_author_bounty_proposal_is_skipped_as_proposal(self):
+        task = qualify(issue(
+            url="https://github.com/BasedHardware/omi/issues/18812", repo="BasedHardware/omi", number=18812,
+            title="[Bounty proposal] docs(python-cli): Kashubian (csb) AI agent quickstart guide ($25 proposed)",
+            body="Added the Kashubian translation. Associated PR #18824. Proposing standard $25 documentation bounty via Algora.",
+            authorAssociation="UNKNOWN", author={"login": "contributor"},
+        ))
+        self.assertEqual(task["status"], "skipped")
+        self.assertIn("förslag", task["reason"])
+        self.assertEqual((task["reward_amount"], task["reward_currency"]), (25, "$"))
+        self.assertFalse(task["source_facts"]["reward_verified_paid"])
 
     def test_closed_reserved_competing_or_large_scope_is_blocked(self):
         for change in [
@@ -262,6 +300,15 @@ class EngineTests(unittest.TestCase):
         task_id = self.store.upsert_task(qualify(issue()))
         return self.store.claim_task("worker-1")
 
+    def legacy_blocked_task(self, number=7, **changes):
+        candidate = qualify(issue(url=f"https://github.com/owner/project/issues/{number}", number=number,
+                                  title="Documentation bounty $25", body="We pay $25 for the README clarification."))
+        candidate.update(status="blocked", reason="Belopp finns men dollarvalutan är inte uttryckligen specificerad.",
+                         source_note="Preserve the original research")
+        candidate.update(changes)
+        task_id = self.store.upsert_task(candidate)
+        return self.store.get_task(task_id)
+
     def test_scan_deduplicates_and_never_records_advertised_rewards_as_income(self):
         for _ in range(2):
             self.engine._scan_lock.acquire()
@@ -284,6 +331,78 @@ class EngineTests(unittest.TestCase):
         self.github.search.assert_not_called()
         self.model.generate.assert_not_called()
 
+    def test_start_requeues_only_legacy_eligibility_failures_once_without_network(self):
+        self.store.update_settings({"running": False})
+        tasks = [self.legacy_blocked_task(), self.legacy_blocked_task(
+            8, reason="Ersättningen är inte bekräftad av en identifierad maintainer.", reward_currency="USD",
+            source_facts={"author_association": "UNKNOWN", "reward_verified_paid": False})]
+
+        self.engine.start()
+        self.engine.stop()
+
+        first_pass = [self.store.get_task(task["id"]) for task in tasks]
+        for before, after in zip(tasks, first_pass):
+            with self.subTest(task=before["id"]):
+                self.assertEqual(after["status"], "discovered")
+                self.assertIn("Väntar på ny granskning", after["reason"])
+                unchanged_fields = set(before) - {"status", "reason", "updated_at"}
+                self.assertEqual({key: after[key] for key in unchanged_fields},
+                                 {key: before[key] for key in unchanged_fields})
+        self.engine.start()
+        self.engine.stop()
+
+        self.assertEqual([self.store.get_task(task["id"]) for task in tasks], first_pass)
+        migrations = [event for event in self.store.get_state()["activity"]
+                      if "tidigare blockerade uppdrag har köats" in event["message"]]
+        self.assertEqual(len(migrations), 1)
+        self.assertFalse(self.github.method_calls)
+        self.assertFalse(self.model.method_calls)
+        self.assertFalse(self.submitter.method_calls)
+        self.assertEqual(self.store.get_state()["metrics"]["earned_sek"], 0)
+
+    def test_start_does_not_requeue_other_failures_deliveries_or_started_tasks(self):
+        self.store.update_settings({"running": False})
+        changes = [
+            {"reason": "Granskningen godkände inte leveransen."},
+            {"reason": "Inlämningsstatus är osäker. Kontrollera GitHub innan nytt försök."},
+            {"reason": "Inlämning behöver kontrolleras: Belopp finns men dollarvalutan är inte uttryckligen specificerad."},
+            {"artifact_path": "/saved/delivery.md"},
+            {"submission_url": "https://github.com/owner/project/pull/1"},
+            {"attempts": 1}, {"worker_id": "worker-1"},
+            *({"status": status} for status in ("discovered", "qualified", "failed", "skipped", "ready", "submitted", "awaiting_payment", "paid")),
+        ]
+        tasks = [self.legacy_blocked_task(number, **change) for number, change in enumerate(changes, start=1)]
+
+        self.engine.start()
+        self.engine.stop()
+
+        for task in tasks:
+            with self.subTest(task=task["id"]):
+                self.assertEqual(self.store.get_task(task["id"]), task)
+        self.assertFalse(self.github.method_calls)
+        self.model.generate.assert_not_called()
+        self.submitter.submit.assert_not_called()
+
+    def test_requeued_currency_task_still_requires_a_fresh_source_check(self):
+        self.store.update_settings({"running": False})
+        task = self.legacy_blocked_task()
+        self.github.issue.return_value = issue(title="Documentation bounty $25", body="Pays $25 for README correction.",
+                                             assignedActors={"nodes": [{"login": "someone"}]})
+        # Keep the scheduler dormant so this test controls the scan itself.
+        with patch.object(self.engine, "_loop"):
+            self.engine.start()
+            self.engine._scheduler.join(timeout=2)
+        self.assertEqual(self.store.get_task(task["id"])["status"], "discovered")
+        self.engine._scan_lock.acquire()
+        self.engine._scan()
+
+        updated = self.store.get_task(task["id"])
+        self.assertEqual(updated["status"], "blocked")
+        self.assertIn("tilldelat", updated["reason"])
+        self.github.issue.assert_called_once_with(task["url"])
+        self.model.generate.assert_not_called()
+        self.submitter.submit.assert_not_called()
+
     def test_real_pipeline_writes_reviewed_artifact_without_submitting_when_disabled(self):
         task = self.task()
         self.engine._work("worker-1", task)
@@ -301,6 +420,43 @@ class EngineTests(unittest.TestCase):
         self.engine._work("worker-1", task)
         self.assertEqual(self.store.get_task(task["id"])["status"], "submitted")
         self.submitter.submit.assert_called_once()
+        self.assertEqual(self.store.get_state()["metrics"]["earned_sek"], 0)
+
+    def test_dollar_task_passes_work_and_submission_rechecks_without_recording_income(self):
+        dollar_issue = issue(title="Documentation bounty $25", body="Pays $25 for the README clarification.")
+        self.github.issue.return_value = dollar_issue
+        self.store.update_settings({"running": True, "auto_submit": True})
+        task_id = self.store.upsert_task(qualify(dollar_issue))
+        task = self.store.claim_task("worker-1")
+
+        self.engine._work("worker-1", task)
+
+        updated = self.store.get_task(task_id)
+        self.assertEqual(updated["status"], "submitted")
+        self.assertEqual((updated["reward_amount"], updated["reward_currency"]), (25, "$"))
+        self.assertFalse(updated["source_facts"]["reward_currency_explicit"])
+        self.assertFalse(updated["source_facts"]["reward_verified_paid"])
+        self.assertEqual(self.github.issue.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 2)
+        self.submitter.submit.assert_called_once()
+        metrics = self.store.get_state()["metrics"]
+        self.assertEqual((metrics["earned_sek"], metrics["pending_sek"], metrics["net_sek"]), (0, 0, 0))
+
+    def test_dollar_task_claimed_before_submission_is_not_published(self):
+        dollar_issue = issue(title="Documentation bounty $25", body="Pays $25 for the README clarification.")
+        self.github.issue.side_effect = [dollar_issue, {**dollar_issue, "assignedActors": {"nodes": [{"login": "someone"}]}}]
+        self.store.update_settings({"running": True, "auto_submit": True})
+        task_id = self.store.upsert_task(qualify(dollar_issue))
+        task = self.store.claim_task("worker-1")
+
+        self.engine._work("worker-1", task)
+
+        updated = self.store.get_task(task_id)
+        self.assertEqual(updated["status"], "blocked")
+        self.assertIn("tilldelat", updated["reason"])
+        self.assertTrue(Path(updated["artifact_path"]).is_file())
+        self.assertEqual(self.github.issue.call_count, 2)
+        self.submitter.submit.assert_not_called()
         self.assertEqual(self.store.get_state()["metrics"]["earned_sek"], 0)
 
     def test_pause_prevents_publication_after_work_has_finished(self):

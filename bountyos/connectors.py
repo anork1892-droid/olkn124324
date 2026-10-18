@@ -310,6 +310,47 @@ class GitHub:
         self.last_status = {"configured": True, "status": "connected", "detail": "Offentlig GitHub-sökning fungerar."}
         return list(dict.fromkeys(results))[:limit]
 
+    @staticmethod
+    def _issue_author_association(issue, repo):
+        author = issue.get("author")
+        login = author.get("login") if isinstance(author, dict) else None
+        if isinstance(login, str) and login and login.casefold() == repo.split("/")[0].casefold():
+            return "OWNER"
+        association = issue.get("authorAssociation")
+        if isinstance(association, str) and association and association != "UNKNOWN":
+            return association
+        if not isinstance(login, str) or not login:
+            return "UNKNOWN"
+        issue_url = issue.get("url")
+        if not isinstance(issue_url, str) or not ISSUE_URL.fullmatch(issue_url):
+            return "UNKNOWN"
+        comment_url = re.compile(re.escape(issue_url) + r"#issuecomment-[1-9][0-9]*$")
+        # Front and back pages carry role metadata even when the issue itself
+        # does not. Read only direct comments belonging to this exact issue.
+        for key in ("timelineItems", "backTimelineItems"):
+            timeline = issue.get(key)
+            if not isinstance(timeline, dict):
+                continue
+            comments = []
+            if isinstance(timeline.get("edges"), list):
+                comments.extend(edge.get("node") for edge in timeline["edges"] if isinstance(edge, dict))
+            if isinstance(timeline.get("nodes"), list):
+                comments.extend(timeline["nodes"])
+            for comment in comments:
+                if not isinstance(comment, dict) or comment.get("__typename") != "IssueComment":
+                    continue
+                author = comment.get("author")
+                comment_login = author.get("login") if isinstance(author, dict) else None
+                url = comment.get("url")
+                if not isinstance(comment_login, str) or comment_login.casefold() != login.casefold():
+                    continue
+                if not isinstance(url, str) or not comment_url.fullmatch(url):
+                    continue
+                association = comment.get("authorAssociation")
+                if isinstance(association, str) and association and association != "UNKNOWN":
+                    return association
+        return "UNKNOWN"
+
     def issue(self, url):
         repo, number = issue_parts(url)
         document = self.http.get(url)
@@ -318,15 +359,7 @@ class GitHub:
                 if item.get("number") == number and item.get("url") == url and isinstance(item.get("body"), str) and "state" in item:
                     issue = dict(item)
                     issue["repo"] = repo
-                    association = issue.get("authorAssociation")
-                    author = (issue.get("author") or {}).get("login", "")
-                    if author.casefold() == repo.split("/")[0].casefold():
-                        association = "OWNER"
-                    if not association:
-                        for comment in walk(issue.get("timelineItems", {})):
-                            if (comment.get("author") or {}).get("login") == author and comment.get("authorAssociation"):
-                                association = comment["authorAssociation"]
-                    issue["authorAssociation"] = association or "UNKNOWN"
+                    issue["authorAssociation"] = self._issue_author_association(issue, repo)
                     return issue
         raise ConnectorError("GitHub-ärendet kunde inte läsas tillförlitligt.")
 
@@ -423,7 +456,7 @@ def qualify(issue):
     combined = title + "\n" + body
     reward, currency = advertised_reward(combined)
     result = {"title": title, "url": issue["url"], "repo": issue["repo"], "kind": "documentation", "reward_amount": reward, "reward_currency": currency or "",
-              "issue_number": issue.get("number"), "status": "discovered", "reason": "Behöver verifieras", "source_facts": {"author_association": issue.get("authorAssociation"), "reward_verified_paid": False}}
+              "issue_number": issue.get("number"), "status": "discovered", "reason": "Behöver verifieras", "source_facts": {"author_association": issue.get("authorAssociation"), "reward_verified_paid": False, "reward_currency_explicit": currency in {"USD", "EUR", "SEK"}}}
     def reject(reason, status="blocked"):
         result.update(status=status, reason=reason)
         return result
@@ -431,12 +464,12 @@ def qualify(issue):
         return reject("Uppdraget är inte öppet.")
     if not reward or not re.search(r"bounty|reward|pays?\b|payment|paid\b|belöning|ersättning", combined, re.I):
         return reject("Ingen uttrycklig ersättning kunde verifieras.", "skipped")
-    if issue.get("authorAssociation") not in {"OWNER", "MEMBER", "COLLABORATOR"}:
-        return reject("Ersättningen är inte bekräftad av en identifierad maintainer.")
     if re.search(r"proposed (?:bounty|reward)|suggested (?:bounty|reward)|bounty proposal|would (?:pay|offer)|could (?:pay|offer)|looking for (?:a )?sponsor|propose.{0,40}(?:bounty|\$)", combined, re.I):
         return reject("Beloppet verkar vara ett förslag, inte ett betalningslöfte.", "skipped")
-    if currency == "$":
-        return reject("Belopp finns men dollarvalutan är inte uttryckligen specificerad.")
+    if issue.get("authorAssociation") not in {"OWNER", "MEMBER", "COLLABORATOR"}:
+        if issue.get("authorAssociation") in {None, "", "UNKNOWN"}:
+            return reject("GitHub visar ingen verifierbar projektroll för den som annonserat belöningen.")
+        return reject("Författarens GitHub-roll bekräftar inte ansvar för projektet.")
     if issue.get("assignedActors", {}).get("nodes") or issue.get("assignees", {}).get("nodes"):
         return reject("Uppdraget är tilldelat någon annan.")
     labels = " ".join(str(node.get("name", "")) for node in walk(issue.get("labels", {})))
@@ -456,6 +489,8 @@ def qualify(issue):
     if re.search(r"\b(implement|gpu|benchmark|smart contract|deploy|add tests|write tests|fix (?:the )?code)\b", combined, re.I):
         return reject("Uppdraget kräver kod, mätningar eller körning utanför dokumentationsagentens stöd.")
     result.update(status="qualified", reason="Öppet dokumentationsuppdrag med maintainer-publicerat belopp; betalning är inte verifierad.")
+    if currency == "$":
+        result["reason"] += " Dollarvalutan är ospecificerad; beloppet visas som $ utan omräkning."
     return result
 
 

@@ -61,11 +61,26 @@ class Engine:
             if self._scheduler and self._scheduler.is_alive():
                 return
             self._stop.clear()
+            eligibility_rechecks = 0
+            retired_reasons = {
+                "Belopp finns men dollarvalutan är inte uttryckligen specificerad.",
+                "Ersättningen är inte bekräftad av en identifierad maintainer.",
+            }
             for task in self.store.list_tasks():
                 if task["status"] in {"working", "reviewing"}:
                     self.store.update_task(task["id"], status="discovered", reason="Avbrutet vid omstart; behöver ny kontroll.")
                 elif task["status"] == "submitting":
                     self.store.update_task(task["id"], status="blocked", reason="Inlämningen avbröts. Kontrollera GitHub innan ett nytt försök görs.")
+                elif (task["status"] == "blocked" and task.get("reason") in retired_reasons
+                      and not any(task.get(field) for field in ("artifact_path", "submission_url", "attempts", "worker_id"))):
+                    # Revisit only the retired eligibility reasons, never a
+                    # delivery or failed attempt. A fresh scan must still pass
+                    # every check before a worker may claim the task.
+                    self.store.update_task(task["id"], status="discovered",
+                                           reason="Väntar på ny granskning efter uppdaterad käll- och valutabedömning.")
+                    eligibility_rechecks += 1
+            if eligibility_rechecks:
+                self.store.log(f"{eligibility_rechecks} tidigare blockerade uppdrag har köats för ny granskning. Inget uppdrag har godkänts automatiskt.")
             for agent in self.store.list_agents():
                 self.store.set_agent(agent["id"], status="idle", task=None, detail=None)
             self._scheduler = threading.Thread(target=self._loop, name="bountyos-scheduler", daemon=True)

@@ -45,6 +45,7 @@ class RewardTests(unittest.TestCase):
                 self.assertEqual(result["reward_amount"], amount)
                 self.assertEqual(result["reward_currency"], currency)
                 self.assertEqual(result["status"], "qualified")
+                self.assertTrue(result["source_facts"]["reward_currency_explicit"])
 
     def test_malformed_or_ambiguous_numbers_never_match_a_part(self):
         values = (
@@ -66,7 +67,9 @@ class RewardTests(unittest.TestCase):
         result = qualify(self.issue("$1,500"))
         self.assertEqual(result["reward_amount"], 1500)
         self.assertEqual(result["reward_currency"], "$")
-        self.assertNotEqual(result["status"], "qualified")
+        self.assertEqual(result["status"], "qualified")
+        self.assertFalse(result["source_facts"]["reward_currency_explicit"])
+        self.assertFalse(result["source_facts"]["reward_verified_paid"])
         self.assertIsNone(advertised_reward("Bounty $1,23,45")[0])
 
     def test_invalid_explicit_amount_does_not_fall_back_to_other_dollars(self):
