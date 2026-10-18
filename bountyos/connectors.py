@@ -222,6 +222,31 @@ def safe_doc_path(path):
     return path in {"README.md", "FAQ.md"} or (parts[0] == "docs" and file.suffix.lower() in {".md", ".txt"})
 
 
+def delivery_schema(paths):
+    """Constrain local generation to existing, supported evidence files."""
+    paths = sorted(set(path for path in paths if safe_doc_path(path)))
+    if not paths:
+        raise ConnectorError("Inga inlästa dokument kan användas för leveransen.")
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": ["files", "summary"],
+        "properties": {
+            "files": {
+                "type": "array", "minItems": 0, "maxItems": 6,
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["path", "content"],
+                    "properties": {
+                        "path": {"type": "string", "enum": paths},
+                        "content": {"type": "string", "minLength": 1, "maxLength": 80000},
+                    },
+                },
+            },
+            "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        },
+    }
+
+
 def validate_delivery(value):
     if not isinstance(value, dict) or not isinstance(value.get("files"), list) or not 1 <= len(value["files"]) <= 6:
         raise ConnectorError("Leveransen måste innehålla 1–6 dokumentationsfiler.")
@@ -509,13 +534,26 @@ def advertised_reward(text):
 
 
 def original_issue_reference(body):
-    """Only an explicitly labelled source section denotes a repost, not any link."""
-    sections = re.findall(r"^#{1,6}[ \t]+[^\n]*(?:\bSource URL\b|\bOriginal URL\b|原始链接)[^\n]*\n(.*?)(?=^#{1,6}[ \t]|\Z)", body, re.I | re.M | re.S)
+    """Follow explicit source fields, never arbitrary links in a description."""
+    label = r"(?:Source[ \t]+URL|Original[ \t]+URL|原[ \t]*URL|原始链接)"
+    sections = re.findall(r"^#{1,6}[ \t]+[^\n]*(?:\bSource URL\b|\bOriginal URL\b|原[ \t]*URL|原始链接)[^\n]*\n(.*?)(?=^#{1,6}[ \t]|\Z)", body, re.I | re.M | re.S)
+    for key, value in re.findall(r"^[ \t]*\|[ \t]*([^|\n]+?)[ \t]*\|[ \t]*([^|\n]*)\|[ \t]*$", body, re.M):
+        # Repost catalogues also publish the original URL as a metadata row.
+        # Requiring a complete field name avoids treating "See also" as a source.
+        key = key.strip().strip("*` ")
+        if re.fullmatch(label + r"(?:[ \t]*/[ \t]*" + label + r")*", key, re.I):
+            sections.append(value)
     if not sections:
         return None
-    urls = re.findall(r"https?://[^\s<>\[\]()]+", "\n".join(sections))
-    unique = list(dict.fromkeys(urls))
-    return unique[0] if len(unique) == 1 and ISSUE_URL.fullmatch(unique[0]) else ""
+    originals = []
+    for section in sections:
+        # Markdown links can repeat the same URL in the label and target.
+        urls = list(dict.fromkeys(re.findall(r"https?://[^\s<>\[\]()]+", section)))
+        if len(urls) != 1 or not ISSUE_URL.fullmatch(urls[0]):
+            return ""
+        originals.append(urls[0])
+    unique = list(dict.fromkeys(originals))
+    return unique[0] if len(unique) == 1 else ""
 
 
 def requires_code_or_runtime(text):
@@ -622,7 +660,7 @@ class Ollama:
         self.last_status = {"configured": True, "status": "connected", "detail": "Lokal modell tillgänglig; inga betalda API-anrop.", "model": self.model}
         return self.last_status
 
-    def generate(self, system, data):
+    def generate(self, system, data, *, schema=None):
         # Recheck the local model before each job; cloud proxy models are rejected.
         self.check()
         try:
@@ -633,7 +671,7 @@ class Ollama:
             raise ConnectorError("BOUNTYOS_MODEL_TIMEOUT måste vara 60–3600 sekunder.") from None
         result = self.http.json(self.url + "/api/generate", payload={
             "model": self.model, "system": system, "prompt": json.dumps(data, ensure_ascii=False),
-            "stream": False, "format": "json", "options": {"temperature": 0.15, "num_predict": 6000, "num_ctx": 16384},
+            "stream": False, "format": schema if schema is not None else "json", "options": {"temperature": 0.15, "num_predict": 6000, "num_ctx": 16384},
         }, timeout=generation_timeout, limit=1_000_000)
         try:
             return json.loads(result["response"])
