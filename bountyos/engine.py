@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -36,7 +37,7 @@ Reject work requiring runtime verification or source code evidence absent from t
 class Engine:
     def __init__(self, store, github=None, model=None, submitter=None):
         self.store = store
-        self.github = github or GitHub()
+        self.github = github or GitHub(state_store=store)
         self.model = model or Ollama()
         self.submitter = submitter or GitHubSubmitter()
         self._stop = threading.Event()
@@ -73,6 +74,13 @@ class Engine:
                     self.store.update_task(task["id"], status="discovered", reason="Avbrutet vid omstart; behöver ny kontroll.")
                 elif task["status"] == "submitting":
                     self.store.update_task(task["id"], status="blocked", reason="Inlämningen avbröts. Kontrollera GitHub innan ett nytt försök görs.")
+                elif (task["status"] == "blocked"
+                      and task.get("reason") in {"Uppdraget kräver kod, mätningar eller körning utanför dokumentationsagentens stöd.",
+                                                  "Första versionens arbetsagent hanterar dokumentationsuppdrag."}
+                      and not any(task.get(field) for field in ("artifact_path", "submission_url", "attempts", "worker_id", "scope_recheck_v1"))):
+                    self.store.update_task(task["id"], status="discovered", scope_recheck_v1=True,
+                                           reason="Väntar på ny kontroll av dokumentationsuppdragets omfattning.")
+                    eligibility_rechecks += 1
                 elif (task["status"] == "blocked" and task.get("reason") in {
                       "Inga befintliga dokument kunde hämtas som underlag.",
                       "Den första versionen ändrar bara dokument som har hämtats som underlag."}
@@ -150,6 +158,34 @@ class Engine:
             })
             return self.store.get_task(task_id)
 
+    def _selection_summary(self):
+        tasks = self.store.list_tasks()
+        if any(task["status"] in {"qualified", "working", "reviewing"} for task in tasks):
+            return ""
+        reasons = Counter()
+        for task in tasks:
+            if task["status"] not in {"blocked", "skipped"}:
+                continue
+            reason = task.get("reason", "")
+            if "Återpublicerad" in reason:
+                category = "återpublicerade annonser"
+            elif "ersättning" in reason or "betalningslöfte" in reason:
+                category = "saknad eller föreslagen ersättning"
+            elif "GitHub-roll" in reason or "projektroll" in reason:
+                category = "oklar uppdragsgivare"
+            elif any(word in reason for word in ("inte öppet", "tilldelat", "reserverat", "länkad leverans", "reservation")):
+                category = "stängda, upptagna eller reservationskrävande uppdrag"
+            elif any(word in reason for word in ("dokument", "kod, mätningar", "underlag", "Modellen")):
+                category = "saknat underlag eller arbete utanför agentens stöd"
+            else:
+                category = "övriga hinder (se uppdragens bedömning)"
+            reasons[category] += 1
+        summary = " Inga uppdrag är redo att påbörjas."
+        if reasons:
+            summary += " Vanligaste orsakerna bland sparade uppdrag: " + "; ".join(
+                f"{amount} {reason}" for reason, amount in reasons.most_common(3)) + "."
+        return summary
+
     def _scan(self):
         self.store.set_agent("scout", name="Scout", role="scout", status="scouting", task=None,
                              detail="Kontrollerar hittade uppdrag och söker efter nya dokumentationsbounties.")
@@ -161,6 +197,7 @@ class Engine:
         checked = set()
         pending = []
         discovery_detail = ""
+        selection_detail = ""
 
         def outcome_summary():
             labels = (("qualified", "utvalt", "utvalda"), ("skipped", "bortvalt", "bortvalda"),
@@ -180,12 +217,12 @@ class Engine:
             nonlocal count, failures
             if url in checked or len(checked) >= 20 or self._stop.is_set():
                 return
-            checked.add(url)
             prior = existing.get(url)
             if prior:
                 current = self.store.get_task(prior["id"])
-                if not current or current["status"] not in {"discovered", "qualified"}:
+                if not current or current["status"] != "discovered":
                     return
+            checked.add(url)
             try:
                 issue_parts(url)
             except ConnectorError:
@@ -235,26 +272,49 @@ class Engine:
                     break
                 assess(task["url"])
             if not self._stop.is_set():
-                found = list(dict.fromkeys(self.github.search()))
-                known = sum(url in existing for url in found)
-                discovery_detail = f" GitHub gav {len(found)} träffar: {len(found) - known} nya och {known} redan kända."
-                if found and known == len(found):
-                    discovery_detail += " Alla träffar finns redan i appen; Scout fortsätter genom fler resultatsidor automatiskt."
-                elif not found:
-                    discovery_detail += " Den här sökfrågan gav inga träffar på aktuell sida; Scout fortsätter med nästa sökfråga automatiskt."
-                self._connection("github", {"configured": True, "status": "connected", "detail": "GitHubs offentliga sökning fungerar."})
-                for url in found:
-                    if self._stop.is_set() or len(checked) >= 20:
+                found = set()
+                known_before_search = set(existing)
+                # Skip through known/empty pages in a bounded pass. HTTP still
+                # enforces spacing and cooldown; this never retries a failure.
+                for search_pass in range(3):
+                    if self._stop.is_set():
                         break
-                    assess(url)
-            message = "Sökning klar: " + outcome_summary() + discovery_detail
+                    urls = list(dict.fromkeys(self.github.search()))
+                    found.update(urls)
+                    new_urls = [url for url in urls if url not in existing]
+                    # Persist every new result before assessment. The read cap,
+                    # cooldown, or a restart must not discard the rest of a page.
+                    with self._task_lock:
+                        for url in new_urls:
+                            repo, number = issue_parts(url)
+                            task_id = self.store.upsert_task({
+                                "url": url, "repo": repo, "issue_number": number,
+                                "title": f"{repo} #{number}", "status": "discovered",
+                                "reason": "Väntar på granskning av hittat uppdrag.",
+                            })
+                            existing[url] = self.store.get_task(task_id)
+                    known = len(found & known_before_search)
+                    discovery_detail = f" GitHub gav {len(found)} unika träffar över {search_pass + 1} söksidor: {len(found) - known} nya och {known} redan kända."
+                    for url in urls:
+                        if self._stop.is_set() or len(checked) >= 20:
+                            break
+                        assess(url)
+                    if new_urls or len(checked) >= 20:
+                        break
+                if found and found <= known_before_search:
+                    discovery_detail += " Alla träffar finns redan i appen; Scout fortsätter med nästa sökfråga automatiskt."
+                elif not found:
+                    discovery_detail += " Dessa söksidor gav inga träffar; Scout fortsätter med nästa sökfråga automatiskt."
+                self._connection("github", {"configured": True, "status": "connected", "detail": "GitHubs offentliga sökning fungerar."})
+            selection_detail = self._selection_summary()
+            message = "Sökning klar: " + outcome_summary() + discovery_detail + selection_detail
             if failures:
                 message += f" {failures} uppdrag kunde inte granskas."
             self.store.log(message + " Annonserade belopp räknas inte som intäkter.")
         except ConnectorError as exc:
             scan_error = str(exc)
             self._connection("github", {"configured": True, "status": "error", "detail": str(exc)})
-            self.store.log(outcome_summary() + f" Sökningen pausades: {exc}", level="warning")
+            self.store.log(outcome_summary() + discovery_detail + f" Sökningen pausades: {exc}", level="warning")
         except Exception:
             # Untrusted responses must not leak response bodies, credentials, or prompts into logs.
             scan_error = "Ett oväntat svar avbröt granskningen; kontrollera anslutningen."
@@ -270,7 +330,7 @@ class Engine:
             # Alternative/test connectors may not expose a numeric cooldown.
             delay = max(interval * 60, cooldown if isinstance(cooldown, (int, float)) else 0)
             self._next_scan = time.monotonic() + delay
-            detail = outcome_summary() + discovery_detail + " "
+            detail = outcome_summary() + discovery_detail + selection_detail + " "
             if scan_error:
                 detail += "Sökningen avbröts: " + scan_error + " "
             elif failures:

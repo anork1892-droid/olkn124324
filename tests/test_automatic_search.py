@@ -33,7 +33,7 @@ class AutomaticSearchTests(unittest.TestCase):
         self.assertTrue(completed.wait(3), 'No automatic search after startup')
         self.engine._scan_thread.join(2)
         self.engine.stop()
-        self.github.search.assert_called_once()
+        self.assertEqual(self.github.search.call_count, 3)
         self.model.check.assert_not_called()
         self.model.generate.assert_not_called()
         self.assertFalse(self.store.get_settings()['auto_submit'])

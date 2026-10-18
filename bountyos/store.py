@@ -68,6 +68,9 @@ class Store:
                     verification TEXT NOT NULL DEFAULT 'manual'
                 );
                 CREATE TABLE IF NOT EXISTS imports (name TEXT PRIMARY KEY, imported_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS internal_state (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS tasks_status ON tasks(status, created_at);
             """)
             for key, value in DEFAULT_SETTINGS.items():
@@ -103,6 +106,26 @@ class Store:
             settings.update({row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT * FROM settings")})
         settings["daily_budget_sek"] = 0
         return settings
+
+    def get_internal_state(self, key: str) -> Any:
+        """Read connector state without exposing it as a user setting."""
+        with self._connection() as conn:
+            row = conn.execute("SELECT value FROM internal_state WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    def set_internal_state(self, key: str, value: Any) -> None:
+        encoded = json.dumps(value, allow_nan=False)
+        with self._connection(write=True) as conn:
+            conn.execute(
+                "INSERT INTO internal_state(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, encoded),
+            )
 
     def update_settings(self, changes: dict) -> dict:
         unknown = set(changes) - set(DEFAULT_SETTINGS)

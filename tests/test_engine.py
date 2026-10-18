@@ -226,7 +226,7 @@ class GitHubParsingTests(unittest.TestCase):
         self.assertEqual(self.requested_queries(transport), expected)
         self.assertEqual(transport.get.call_count, len(expected))
         for query in expected:
-            for qualifier in ("is:issue", "is:open", "no:assignee", "in:title"):
+            for qualifier in ("is:issue", "is:open", "no:assignee"):
                 self.assertIn(qualifier, query.split())
 
     def test_search_pages_advance_per_query_and_wrap_at_bound(self):
@@ -239,7 +239,7 @@ class GitHubParsingTests(unittest.TestCase):
             github.search()
         pages = [int(parse_qs(urlsplit(call.args[0]).query)["p"][0])
                  for call in transport.get.call_args_list]
-        self.assertEqual(pages, [1] * 6 + [2] * 6 + [1] * 6)
+        self.assertEqual(pages, [1] * len(github.SEARCH_QUERIES) + [2] * len(github.SEARCH_QUERIES) + [1] * len(github.SEARCH_QUERIES))
 
     def test_empty_page_resets_and_failure_preserves_deeper_page(self):
         transport = Mock()

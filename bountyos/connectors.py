@@ -247,7 +247,8 @@ def validate_delivery(value):
 
 
 class GitHub:
-    MAX_SEARCH_PAGES = 10
+    MAX_SEARCH_PAGES = 100
+    SEARCH_STATE_KEY = "github-search-v1"
     SEARCH_QUERIES = (
         "is:issue is:open no:assignee bounty documentation in:title",
         "is:issue is:open no:assignee bounty readme in:title",
@@ -255,25 +256,48 @@ class GitHub:
         "is:issue is:open no:assignee bounty typo in:title",
         "is:issue is:open no:assignee label:bounty documentation in:title",
         "is:issue is:open no:assignee label:bounty readme in:title",
+        "is:issue is:open no:assignee label:bounty docs in:title",
+        "is:issue is:open no:assignee bounty faq in:title",
+        "is:issue is:open no:assignee bounty spelling in:title",
+        "is:issue is:open no:assignee label:bounty faq in:title",
+        "is:issue is:open no:assignee label:bounty spelling in:title",
+        "is:issue is:open no:assignee label:documentation bounty in:body",
+        "is:issue is:open no:assignee label:docs bounty in:body",
     )
 
-    def __init__(self, http=None):
+    def __init__(self, http=None, state_store=None):
         self.http = http or HTTP(min_interval=3)
+        self._state_store = state_store
         self._search_index = 0
-        self._search_pages = [1] * len(self.SEARCH_QUERIES)
+        self._search_pages = {query: 1 for query in self.SEARCH_QUERIES}
+        if state_store is not None:
+            saved = state_store.get_internal_state(self.SEARCH_STATE_KEY)
+            if isinstance(saved, dict) and type(saved.get("version")) is int and saved["version"] == 1:
+                pages = saved.get("pages")
+                if isinstance(pages, dict):
+                    for query in self.SEARCH_QUERIES:
+                        page = pages.get(query)
+                        if type(page) is int and 1 <= page <= self.MAX_SEARCH_PAGES:
+                            self._search_pages[query] = page
+                next_query = saved.get("next_query")
+                if next_query in self.SEARCH_QUERIES:
+                    self._search_index = self.SEARCH_QUERIES.index(next_query)
+        self.last_search = None
         self.last_status = {"configured": True, "status": "unknown", "detail": "Offentlig GitHub-sökning är ännu inte kontrollerad."}
 
     def search(self, query=None, limit=12):
         automatic = query is None
         if automatic:
             query = self.SEARCH_QUERIES[self._search_index]
-        page = self._search_pages[self._search_index] if automatic else 1
+        page = self._search_pages[query] if automatic else 1
         url = "https://github.com/search?" + parse.urlencode({"q": query, "type": "issues", "s": "updated", "o": "desc", "p": page})
         document = self.http.get(url)
         results = []
         routes = list(embedded_json(document))
         has_results = False
         saw_rows = False
+        page_count = None
+        result_count = None
         # Only route payloads contain search results. Unrelated page metadata and
         # references nested inside a result must not become additional tasks.
         while routes:
@@ -288,6 +312,12 @@ class GitHub:
                 raise ConnectorError("GitHub kunde inte slutföra sökfrågan; sökningen behöver kontrolleras.")
             has_results = True
             saw_rows = saw_rows or bool(rows)
+            # GitHub's route declares the total pages explicitly. A short page
+            # can still have successors, so the number of rows is not an end marker.
+            if type(route.get("page_count")) is int and route["page_count"] >= 0:
+                page_count = route["page_count"]
+            if type(route.get("result_count")) is int and route["result_count"] >= 0:
+                result_count = route["result_count"]
             for item in rows:
                 if not isinstance(item, dict):
                     continue
@@ -313,12 +343,24 @@ class GitHub:
         if saw_rows and not results:
             raise ConnectorError("GitHubs sökresultat kunde inte läsas tillförlitligt.")
         if automatic:
-            # Each query walks deeper independently. Empty pages and the bound
-            # restart at recent results; errors above leave the cursor untouched.
-            self._search_pages[self._search_index] = page + 1 if results and page < self.MAX_SEARCH_PAGES else 1
-            self._search_index = (self._search_index + 1) % len(self.SEARCH_QUERIES)
+            bound = min(self.MAX_SEARCH_PAGES, page_count) if page_count is not None else self.MAX_SEARCH_PAGES
+            next_pages = {**self._search_pages, query: page + 1 if results and page < bound else 1}
+            next_index = (self._search_index + 1) % len(self.SEARCH_QUERIES)
+            # Save only a successfully parsed page. Failed requests and malformed
+            # responses retry this same query/page, including after an app restart.
+            if self._state_store is not None:
+                self._state_store.set_internal_state(self.SEARCH_STATE_KEY, {
+                    "version": 1,
+                    "next_query": self.SEARCH_QUERIES[next_index],
+                    "pages": next_pages,
+                })
+            self._search_pages = next_pages
+            self._search_index = next_index
+        result_urls = list(dict.fromkeys(results))[:limit]
+        self.last_search = {"query": query, "page": page, "page_count": page_count,
+                            "result_count": result_count, "returned": len(result_urls), "automatic": automatic}
         self.last_status = {"configured": True, "status": "connected", "detail": "Offentlig GitHub-sökning fungerar."}
-        return list(dict.fromkeys(results))[:limit]
+        return result_urls
 
     @staticmethod
     def _issue_author_association(issue, repo):
@@ -476,6 +518,35 @@ def original_issue_reference(body):
     return unique[0] if len(unique) == 1 and ISSUE_URL.fullmatch(unique[0]) else ""
 
 
+def requires_code_or_runtime(text):
+    """Recognize requested operations, not subjects such as GPU documentation.
+
+    This is an initial scope filter; the worker still needs repository evidence
+    and an independent review. A documentation explanation or a negation applies
+    only to its local clause, never to later instructions in the same issue.
+    """
+    operations = re.compile(r"""\b(?:
+        implement(?:ing)?
+        |(?:add|write|create)\s+(?:(?:new|unit|integration|regression|automated|end-to-end)\s+){0,3}tests?
+        |(?:fix|modify|change|update|write)\s+(?:(?:the|a|an|existing|new)\s+)?(?:code|implementation|function|method|class|endpoint|api|smart\s+contract)
+        |(?:build|create|add)\s+(?:(?:the|a|an|new|working|GPU)\s+){0,3}(?:feature|function|method|class|endpoint|api|application|app|smart\s+contract|benchmark|test\s+suite)
+        |(?:deploy|deploying|redeploy)
+        |(?:run|running|execute|executing|perform|performing)\s+(?:(?:the|a|an|new|existing|GPU|unit|integration|regression|automated|runtime|performance|load)\s+){0,4}(?:benchmarks?|tests?|commands?|code|measurements?|deployments?|pytest|npm|python)
+        |(?:benchmark|profile|test)\s+(?:(?:the|a|an|existing|new)\s+)?(?:code|application|app|software|system|GPU|performance|deployment|api)
+        |measure\s+(?:(?:the|a|an|actual|runtime)\s+)?(?:performance|latency|throughput|memory|power)
+    )\b""", re.I | re.X)
+    for operation in operations.finditer(text):
+        # Delimit conjunctions too: "document X and deploy Y" is mixed work.
+        prefix = re.split(r"[\n.!?;,]|\b(?:and|but|then)\b", text[:operation.start()], flags=re.I)[-1]
+        prefix = prefix.rstrip(" \t`'\"")
+        if re.search(r"\b(?:do not|don't|must not|should not|never|without|no need to|not required to|no)(?:\s+(?:actually|ever|first))?\s*$", prefix, re.I):
+            continue
+        if re.search(r"\b(?:document|explain|describe|clarify|docs?|documentation|readme|faq|guide|tutorial|instructions|section)\b.{0,100}\b(?:how to|how users can|steps to|commands to)\s*$", prefix, re.I):
+            continue
+        return True
+    return False
+
+
 def qualify(issue):
     title, body = issue.get("title", ""), issue.get("body", "")
     combined = title + "\n" + body
@@ -514,10 +585,11 @@ def qualify(issue):
     timeline = issue.get("timelineItems", {})
     if timeline.get("pageInfo", {}).get("hasNextPage") or timeline.get("pageInfo", {}).get("hasPreviousPage"):
         return reject("Diskussionen är ofullständigt inläst; ledig omfattning är inte verifierad.")
-    if not re.search(r"\b(docs?|documentation|readme|faq|typos?|spelling)\b", title, re.I):
+    doc_labels = {str(node.get("name", "")).casefold() for node in walk(issue.get("labels", {}))}
+    if not re.search(r"\b(docs?|documentation|readme|faq|typos?|spelling)\b", title, re.I) and not doc_labels.intersection({"docs", "documentation"}):
         result["kind"] = "other"
         return reject("Första versionens arbetsagent hanterar dokumentationsuppdrag.")
-    if re.search(r"\b(implement|gpu|benchmark|smart contract|deploy|add tests|write tests|fix (?:the )?code)\b", combined, re.I):
+    if requires_code_or_runtime(combined):
         return reject("Uppdraget kräver kod, mätningar eller körning utanför dokumentationsagentens stöd.")
     result.update(status="qualified", reason="Öppet dokumentationsuppdrag med maintainer-publicerat belopp; betalning är inte verifierad.")
     if currency == "$":

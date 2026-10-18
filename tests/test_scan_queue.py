@@ -55,12 +55,12 @@ class ScanQueueTests(unittest.TestCase):
         self.github.search.return_value = [task["url"]]
         self.scan()
         self.github.issue.assert_not_called()
-        self.assertIn("GitHub gav 1 träffar: 0 nya och 1 redan kända.", self.scout()["detail"])
+        self.assertIn("GitHub gav 1 unika träffar över 3 söksidor: 0 nya och 1 redan kända.", self.scout()["detail"])
         self.assertIn("Alla träffar finns redan", self.scout()["detail"])
 
     def test_empty_search_explains_zero_results(self):
         self.scan()
-        self.assertIn("GitHub gav 0 träffar", self.scout()["detail"])
+        self.assertIn("GitHub gav 0 unika träffar", self.scout()["detail"])
         self.assertIn("nästa sökfråga automatiskt", self.scout()["detail"])
 
     def test_saved_task_is_assessed_before_failing_search(self):
@@ -170,7 +170,7 @@ class ScanQueueTests(unittest.TestCase):
         self.scan()
 
         self.github.issue.assert_not_called()
-        self.assertEqual(self.github.search.call_count, 2)
+        self.assertEqual(self.github.search.call_count, 6)
 
     def test_successful_scan_reports_selected_skipped_and_blocked_outcomes(self):
         tasks = [self.pending(number) for number in (1, 2, 3)]
