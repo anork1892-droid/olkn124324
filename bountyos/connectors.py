@@ -222,8 +222,65 @@ def safe_doc_path(path):
     return path in {"README.md", "FAQ.md"} or (parts[0] == "docs" and file.suffix.lower() in {".md", ".txt"})
 
 
+def requested_document_paths(issue):
+    """Read path mentions as data; only direct creation requests permit new files."""
+    text = str(issue.get("title", "")) + "\n" + str(issue.get("body", ""))
+    # Include the whole path-like token so unsafe prefixes cannot turn into a
+    # seemingly safe suffix (../docs/a.md, absolute paths, URLs, encoded paths).
+    tokens = re.finditer(
+        r"(?<![\w./\\%:-])[A-Za-z0-9_./\\%:-]+\.(?:md|txt)"
+        r"(?![\w/\\%:-]|\.[\w./\\%:-])", text, re.I,
+    )
+    mentioned, created = [], []
+    creation = re.compile(
+        r"\b(?:create|add|write\s+(?:(?:a|the)\s+)?new)"
+        r"(?:\s+(?:a|an|the|new|documentation|document|doc|docs|markdown|text|file|guide|page|tutorial|faq|readme|at|as|named|called|in)){0,12}"
+        r"\s*[:`\"'\[]*\s*$", re.I,
+    )
+    for match in tokens:
+        path = match.group()
+        if not safe_doc_path(path):
+            continue
+        mentioned.append(path)
+        prefix = re.split(r"[\n.!?;]", text[:match.start()])[-1][-180:]
+        action = creation.search(prefix)
+        if not action:
+            continue
+        before_action = prefix[:action.start()]
+        if re.search(r"\b(?:not|never|without|avoid|don't|no need to|rather than)\b", before_action, re.I):
+            continue
+        created.append(path)
+    return list(dict.fromkeys(mentioned)), list(dict.fromkeys(created))
+
+
+def repository_commit(roots, branch):
+    """Use only repository-route metadata, not commit IDs in readme/link data."""
+    candidates = set()
+    pending = list(roots)
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, dict):
+            continue
+        for key in ("payload", "codeViewRepoRoute", "codeViewRoute"):
+            if isinstance(item.get(key), dict):
+                pending.append(item[key])
+        if item.get("path") not in {None, "", "/"}:
+            continue
+        ref = item.get("refInfo", {})
+        if not isinstance(ref, dict) or ref.get("name") not in {None, branch}:
+            continue
+        current = item.get("currentCommit", {})
+        values = [item.get("currentOid"), ref.get("currentOid")]
+        if isinstance(current, dict):
+            values.append(current.get("oid"))
+        for value in values:
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value):
+                candidates.add(value.lower())
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def delivery_schema(paths):
-    """Constrain local generation to existing, supported evidence files."""
+    """Constrain local generation to the validated documentation targets."""
     paths = sorted(set(path for path in paths if safe_doc_path(path)))
     if not paths:
         raise ConnectorError("Inga inlästa dokument kan användas för leveransen.")
@@ -441,12 +498,14 @@ class GitHub:
         raise ConnectorError("GitHub-ärendet kunde inte läsas tillförlitligt.")
 
     def repository_context(self, issue):
-        """Read existing docs from the default branch, without cloning/executing code."""
+        """Read bounded docs and verify explicit new targets at a pinned snapshot."""
         repo = issue["repo"]
         root = self.http.get(f"https://github.com/{repo}")
         branch = None
-        candidates = ["README.md", "FAQ.md"]
-        for data in embedded_json(root):
+        requested, creation_targets = requested_document_paths(issue)
+        candidates = requested + ["README.md", "FAQ.md"]
+        roots = embedded_json(root)
+        for data in roots:
             for item in walk(data):
                 if isinstance(item.get("defaultBranch"), str):
                     branch = item["defaultBranch"]
@@ -455,12 +514,11 @@ class GitHub:
                     candidates.append(path)
         if not branch:
             raise ConnectorError("Kunde inte fastställa repositoryts standardgren.")
-        for match in re.finditer(r"(?:docs/[A-Za-z0-9_./-]+\.(?:md|txt)|README\.md|FAQ\.md)", issue["body"]):
-            if safe_doc_path(match.group()):
-                candidates.append(match.group())
+        commit = repository_commit(roots, branch)
+        ref = commit or branch
         # Root listing normally does not include files under docs/.
         try:
-            docs_page = self.http.get(f"https://github.com/{repo}/tree/{parse.quote(branch, safe='')}/docs")
+            docs_page = self.http.get(f"https://github.com/{repo}/tree/{parse.quote(ref, safe='')}/docs")
             for data in embedded_json(docs_page):
                 for item in walk(data):
                     if safe_doc_path(item.get("path")):
@@ -468,20 +526,28 @@ class GitHub:
         except HTTPFailure as exc:
             if exc.status_code != 404:
                 raise ConnectorError("Dokumentlistan kunde inte hämtas: " + str(exc)) from None
-        documents = {}
-        for path in list(dict.fromkeys(candidates))[:10]:
+        documents, missing_targets = {}, []
+        checked = list(dict.fromkeys(candidates))[:10]
+        for path in checked:
             try:
-                text = self.http.get(f"https://raw.githubusercontent.com/{repo}/{parse.quote(branch, safe='')}/{path}", limit=100_000)
+                text = self.http.get(f"https://raw.githubusercontent.com/{repo}/{parse.quote(ref, safe='')}/{path}", limit=100_000)
                 documents[path] = text
             except HTTPFailure as exc:
                 if exc.status_code == 404:
+                    if path in creation_targets:
+                        missing_targets.append(path)
                     continue
                 raise ConnectorError("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
             except ConnectorError as exc:
                 raise ConnectorError("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
         if not documents:
-            raise ConnectorError("Inga stödda dokument hittades i målprojektet. Kontrollerade sökvägar: " + ", ".join(list(dict.fromkeys(candidates))[:10]))
-        return {"repo": repo, "branch": branch, "files": documents}
+            raise ConnectorError("Inga stödda dokument hittades i målprojektet. Kontrollerade sökvägar: " + ", ".join(checked))
+        context = {"repo": repo, "branch": branch, "files": documents, "new_files": missing_targets if commit else []}
+        if commit:
+            context["commit"] = commit
+        elif missing_targets:
+            context["new_files_unavailable_reason"] = "Nya dokument kunde inte godkännas eftersom underlagets exakta Git-version inte kunde verifieras."
+        return context
 
 
 def parse_reward_amount(raw):
@@ -725,13 +791,54 @@ class GitHubSubmitter:
         base = upstream["default_branch"]
         ref = self.api(f"/repos/{repo}/git/ref/heads/{parse.quote(base, safe='')}")
         base_sha = ref["object"]["sha"]
-        if any(item["path"] not in context["files"] for item in delivery["files"]):
-            raise ConnectorError("Den första versionen ändrar bara dokument som har hämtats som underlag.")
+        evidence = context.get("files", {})
+        if not isinstance(evidence, dict):
+            raise ConnectorError("Leveransens dokumentunderlag är ogiltigt.")
+        delivered_paths = {item["path"] for item in delivery["files"]}
+        new_paths = sorted(delivered_paths.difference(evidence))
+        if new_paths:
+            allowed_new = context.get("new_files", [])
+            snapshot = context.get("commit")
+            if (not isinstance(allowed_new, list)
+                    or not all(safe_doc_path(path) for path in allowed_new)
+                    or not set(new_paths).issubset(allowed_new)
+                    or not isinstance(snapshot, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{40}", snapshot)
+                    or not isinstance(base_sha, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{40}", base_sha)
+                    or not evidence):
+                raise ConnectorError("Nya dokument kräver en uttryckligen tillåten sökväg och verifierat underlag från en bestämd commit.")
+            # A contents 404 can also mean a missing ref. Prove the older
+            # snapshot exists before treating its 404 responses as absent files.
+            if snapshot != base_sha:
+                prior = self.api(f"/repos/{repo}/git/commits/{snapshot}")
+                if not isinstance(prior, dict) or prior.get("sha") != snapshot:
+                    raise ConnectorError("Underlagets commit kunde inte verifieras; ny granskning behövs.")
+            for path in new_paths:
+                for revision in dict.fromkeys((snapshot, base_sha)):
+                    try:
+                        self.api(f"/repos/{repo}/contents/{parse.quote(path, safe='/')}?ref={parse.quote(revision, safe='')}")
+                    except HTTPFailure as exc:
+                        if exc.status_code == 404:
+                            continue
+                        raise
+                    raise ConnectorError("Det nya dokumentet finns redan i projektet: " + path + ". Ny granskning behövs.")
         # A snapshot mismatch requires regenerated work, not overwriting new upstream docs.
-        for path, text in context["files"].items():
-            if path in {entry["path"] for entry in delivery["files"]}:
+        # New documentation can rely on any evidence file, including unchanged
+        # files that are not part of the eventual delivery.
+        for path, text in evidence.items():
+            if new_paths or path in delivered_paths:
+                if not safe_doc_path(path) or not isinstance(text, str):
+                    raise ConnectorError("Leveransens dokumentunderlag är ogiltigt.")
                 item = self.api(f"/repos/{repo}/contents/{parse.quote(path, safe='/')}?ref={parse.quote(base_sha, safe='')}")
-                if item.get("type") != "file" or base64.b64decode(item.get("content", "")).decode() != text:
+                if (not isinstance(item, dict) or item.get("type") != "file"
+                        or item.get("target") is not None or item.get("submodule_git_url") is not None):
+                    raise ConnectorError("Underlaget är inte längre en vanlig dokumentfil; ny granskning behövs.")
+                try:
+                    current = base64.b64decode("".join(item.get("content", "").split()), validate=True).decode("utf-8")
+                except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
+                    raise ConnectorError("Underlagets innehåll kunde inte verifieras; ny granskning behövs.") from None
+                if current != text:
                     raise ConnectorError("Underlaget har ändrats sedan arbetet skapades; ny granskning behövs.")
         fork = self.api(f"/repos/{repo}/forks", payload={"default_branch_only": True}, method="POST")
         fork_name = fork["full_name"]

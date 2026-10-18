@@ -33,9 +33,9 @@
   const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.spark}</svg>`;
   const navigation = [{ key: "overview", label: "Översikt", icon: "grid" }, { key: "tasks", label: "Uppdrag", icon: "tasks" }, { key: "agents", label: "Agenter", icon: "agents" }, { key: "finance", label: "Ekonomi", icon: "finance" }, { key: "settings", label: "Inställningar", icon: "settings" }];
   const taskStatuses = {
-    discovered: ["Hittat", "blue"], found: ["Hittat", "blue"], new: ["Hittat", "blue"], queued: ["I kö", "blue"], researching: ["Undersöks", "blue"], evaluating: ["Bedöms", "blue"], qualified: ["Utvalt", "green"], eligible: ["Utvalt", "green"], working: ["Pågår", "green"], in_progress: ["Pågår", "green"], executing: ["Pågår", "green"], solving: ["Pågår", "green"], reviewing: ["Granskas", "amber"], review: ["Granskas", "amber"], ready: ["Klart", "green"], ready_to_submit: ["Klart", "green"], completed: ["Klart", "green"], submitted: ["Inskickat", "blue"], paid: ["Betalt", "green"], blocked: ["Blockerat", "amber"], skipped: ["Bortvalt", "gray"], rejected: ["Avvisat", "gray"], failed: ["Fel", "red"], error: ["Fel", "red"], needs_review: ["Behöver ses över", "amber"], awaiting_payment: ["Väntar betalning", "amber"], submitting: ["Skickas in", "blue"], draft: ["Utkast", "gray"], reserved: ["Reserverat", "amber"], closed: ["Stängt", "gray"], expired: ["Utgånget", "gray"]
+    discovered: ["Hittat", "blue"], found: ["Hittat", "blue"], new: ["Hittat", "blue"], queued: ["I kö", "blue"], researching: ["Undersöks", "blue"], evaluating: ["Bedöms", "blue"], qualified: ["Utvalt", "green"], eligible: ["Utvalt", "green"], preparing: ["Granskar underlag", "blue"], working: ["Pågår", "green"], in_progress: ["Pågår", "green"], executing: ["Pågår", "green"], solving: ["Pågår", "green"], reviewing: ["Granskas", "amber"], review: ["Granskas", "amber"], ready: ["Klart", "green"], ready_to_submit: ["Klart", "green"], completed: ["Klart", "green"], submitted: ["Inskickat", "blue"], paid: ["Betalt", "green"], blocked: ["Blockerat", "amber"], skipped: ["Bortvalt", "gray"], rejected: ["Avvisat", "gray"], failed: ["Fel", "red"], error: ["Fel", "red"], needs_review: ["Behöver ses över", "amber"], awaiting_payment: ["Väntar betalning", "amber"], submitting: ["Skickas in", "blue"], draft: ["Utkast", "gray"], reserved: ["Reserverat", "amber"], closed: ["Stängt", "gray"], expired: ["Utgånget", "gray"]
   };
-  const agentStatuses = { idle: "Redo", waiting: "Väntar", paused: "Pausad", stopped: "Pausad", running: "Arbetar", working: "Arbetar", busy: "Arbetar", scanning: "Söker", scouting: "Söker", searching: "Söker", reviewing: "Granskar", blocked: "Blockerad", error: "Fel", offline: "Offline", disabled: "Avstängd", ready: "Redo" };
+  const agentStatuses = { idle: "Redo", waiting: "Väntar", paused: "Pausad", stopped: "Pausad", running: "Arbetar", preparing: "Granskar underlag", working: "Arbetar", busy: "Arbetar", scanning: "Söker", scouting: "Söker", searching: "Söker", reviewing: "Granskar", blocked: "Blockerad", error: "Fel", offline: "Offline", disabled: "Avstängd", ready: "Redo" };
   const roleNames = { scout: "Hittar nya uppdrag", discovery: "Hittar nya uppdrag", researcher: "Hittar nya uppdrag", evaluator: "Bedömer möjligheter", qualifier: "Bedömer möjligheter", worker: "Utför uppdrag", solver: "Utför uppdrag", reviewer: "Granskar leveranser", executor: "Utför uppdrag", submission: "Skickar leveranser" };
   let state = null;
   let currentView = navigation.some(item => item.key === location.hash.slice(1)) ? location.hash.slice(1) : "overview";
@@ -46,6 +46,8 @@
   let polling = false;
   let operationBusy = false;
   let drawerTaskId = null;
+  let drawerTaskSnapshot = null;
+  let drawerArtifactPath = null;
   let previousFocus = null;
 
   const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -68,9 +70,9 @@
   const isRunning = () => Boolean(settings().running);
   const searchEnabled = () => settings().search_enabled !== false;
   const aiReady = () => ["ready", "connected", "ok", "available", "healthy"].includes(String(state?.connections?.ai?.status || "").toLowerCase());
-  const workingStatuses = new Set(["working", "in_progress", "executing", "solving", "researching", "evaluating", "reviewing", "review"]);
+  const workingStatuses = new Set(["preparing", "working", "in_progress", "executing", "solving", "researching", "evaluating", "reviewing", "review"]);
   const availableTasks = () => tasks().filter(task => !["paid", "rejected", "skipped", "closed", "expired"].includes(task.status));
-  const agentWorking = agent => ["working", "running", "busy", "scanning", "scouting", "searching", "reviewing"].includes(agent.status);
+  const agentWorking = agent => ["preparing", "working", "running", "busy", "scanning", "scouting", "searching", "reviewing"].includes(agent.status);
   const statusBadge = status => { const known = taskStatuses[status] || [String(status || "Okänt"), "gray"]; return `<span class="badge ${known[1]}">${escapeHTML(known[0])}</span>`; };
   const reward = (task, compact = true) => {
     if (task.reward_amount == null) return escapeHTML(compact ? "Se villkor" : task.advertised_reward_description || "Ej bekräftad");
@@ -183,8 +185,8 @@
   }
 
   function pipelinePanel() {
-    const counts = [tasks().filter(task => ["discovered", "found", "new", "queued", "qualified", "eligible"].includes(task.status)).length, tasks().filter(task => ["working", "in_progress", "executing", "solving", "researching", "evaluating"].includes(task.status)).length, tasks().filter(task => ["reviewing", "review", "needs_review", "ready", "ready_to_submit", "completed"].includes(task.status)).length, tasks().filter(task => ["submitted", "paid", "awaiting_payment"].includes(task.status)).length];
-    const stages = [{ name: "Hittade uppdrag", icon: "search" }, { name: "Arbete pågår", icon: "spark" }, { name: "Granskning & leverans", icon: "review" }, { name: "Inskickade", icon: "send" }];
+    const counts = [tasks().filter(task => ["discovered", "found", "new", "queued", "qualified", "eligible"].includes(task.status)).length, tasks().filter(task => task.status === "preparing").length, tasks().filter(task => ["working", "in_progress", "executing", "solving", "researching", "evaluating"].includes(task.status)).length, tasks().filter(task => ["reviewing", "review", "needs_review", "ready", "ready_to_submit", "completed"].includes(task.status)).length, tasks().filter(task => ["submitted", "paid", "awaiting_payment"].includes(task.status)).length];
+    const stages = [{ name: "Hittade uppdrag", icon: "search" }, { name: "Granskar underlag", icon: "file" }, { name: "Arbete pågår", icon: "spark" }, { name: "Granskning & leverans", icon: "review" }, { name: "Inskickade", icon: "send" }];
     const total = Math.max(1, ...counts);
     return `<section class="panel"><div class="panel-heading"><div><h2 class="panel-title">Från möjlighet till leverans</h2><p class="panel-subtitle">Varje uppdrag, ett steg i taget.</p></div>${icon("link")}</div><div class="pipeline-content">${stages.map((stage, i) => `<div class="pipeline-stage"><span class="stage-icon">${icon(stage.icon)}</span><span class="stage-label">${stage.name}</span><span class="stage-number">${counts[i]}</span><span class="stage-track"><span style="width:${counts[i] / total * 100}%"></span></span></div>`).join("")}</div><p class="pipeline-footnote">${counts.some(Boolean) ? "Agenterna följer samma flöde för varje uppdrag." : "Flödet är redo. Din första sökning är nästa steg."}</p></section>`;
   }
@@ -201,7 +203,7 @@
     const selected = filteredTasks();
     const shown = limit ? selected.slice(0, limit) : selected;
     if (!shown.length) return `<div class="task-empty"><span class="empty-illustration">${icon(searchQuery || taskFilter !== "all" ? "search" : "folder")}</span><strong>${searchQuery || taskFilter !== "all" ? "Inga uppdrag matchar din sökning" : "Nästa möjlighet väntar där ute"}</strong><p>${searchQuery || taskFilter !== "all" ? "Prova en annan sökning eller visa alla uppdrag." : "Låt dina agenter hitta små uppdrag med potential. Allt samlas här."}</p>${!tasks().length ? `<button class="button button-secondary button-small" data-action="scan"${operationBusy ? " disabled" : ""}>${icon("search")}Hitta första uppdraget</button>` : '<button class="button button-quiet" data-action="clear-filter">Visa alla uppdrag</button>'}</div>`;
-    return `<table class="tasks-table${limit ? "" : " full-tasks-table"}"><thead><tr><th class="title-col" scope="col">Uppdrag</th><th class="reward-col" scope="col">Belöning</th><th scope="col">Status</th></tr></thead><tbody>${shown.map(task => `<tr><td><button class="task-title" data-task-id="${escapeHTML(task.id)}" title="${escapeHTML(task.title)}">${escapeHTML(task.title || "Namnlöst uppdrag")}</button><span class="task-repo">${escapeHTML(task.repo || task.kind || "GitHub")}</span>${!limit && task.reason && ["discovered", "blocked", "failed", "skipped"].includes(task.status) ? `<span class="task-assessment">${escapeHTML(task.reason)}</span>` : ""}</td><td title="${escapeHTML(task.advertised_reward_description || "Annonserad belöning, ingen garanterad utbetalning")}">${reward(task)}</td><td>${statusBadge(task.status)}</td></tr>`).join("")}</tbody></table>`;
+    return `<table class="tasks-table${limit ? "" : " full-tasks-table"}"><thead><tr><th class="title-col" scope="col">Uppdrag</th><th class="reward-col" scope="col">Belöning</th><th scope="col">Status</th></tr></thead><tbody>${shown.map(task => `<tr><td><button class="task-title" data-task-id="${escapeHTML(task.id)}" title="${escapeHTML(task.title)}">${escapeHTML(task.title || "Namnlöst uppdrag")}</button><span class="task-repo">${escapeHTML(task.repo || task.kind || "GitHub")}</span>${!limit && task.reason && ["discovered", "preparing", "blocked", "failed", "skipped"].includes(task.status) ? `<span class="task-assessment">${escapeHTML(task.reason)}</span>` : ""}</td><td title="${escapeHTML(task.advertised_reward_description || "Annonserad belöning, ingen garanterad utbetalning")}">${reward(task)}</td><td>${statusBadge(task.status)}</td></tr>`).join("")}</tbody></table>`;
   }
 
   function tasksPanel(compact = true) {
@@ -222,7 +224,7 @@
   }
 
   function tasksView() {
-    return `${heading('En plats för <em>nästa möjlighet.</em>', "Hittat betyder registrerat, men ännu inte godkänt för arbete. Arbetsagenten börjar när statusen är Utvalt.", controls(), "UPPDRAG")}${operatingStrip()}${tasksPanel(false)}<div class="hint-card section-gap"><h3>En annonserad belöning är en möjlighet</h3>Belöningar visas i den valuta uppdragsgivaren anger. Intäkter räknas först när du registrerar en faktisk inbetalning i Ekonomi.</div>`;
+    return `${heading('En plats för <em>nästa möjlighet.</em>', "Agenten granskar underlaget och gör en arbetsplan innan ett utvalt uppdrag får status Pågår.", controls(), "UPPDRAG")}${operatingStrip()}${tasksPanel(false)}<div class="hint-card section-gap"><h3>En annonserad belöning är en möjlighet</h3>Belöningar visas i den valuta uppdragsgivaren anger. Intäkter räknas först när du registrerar en faktisk inbetalning i Ekonomi.</div>`;
   }
 
   function agentsView() {
@@ -295,6 +297,7 @@
       const focused = document.activeElement;
       const editing = focused && ["INPUT", "SELECT", "TEXTAREA"].includes(focused.tagName);
       if (forceRender || (!editing && !(currentView === "settings" && settingsDirty))) renderView();
+      refreshDrawer();
       $("#last-updated").textContent = `Uppdaterat ${new Intl.DateTimeFormat("sv-SE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Stockholm" }).format(new Date())}`;
     } catch (error) {
       $("#connection-error").textContent = error.message;
@@ -316,23 +319,75 @@
       toast(successMessage);
       return true;
     } catch (error) { toast(error.message, true); return false; }
-    finally { operationBusy = false; await refreshState(true); if (drawerTaskId) renderDrawer(drawerTaskId); const paymentButton = $('#payment-form button[type="submit"]'); if (paymentButton) paymentButton.disabled = false; }
+    finally { operationBusy = false; await refreshState(true); const retryButton = $('.drawer [data-action="retry"]'); if (retryButton) retryButton.disabled = false; const paymentButton = $('#payment-form button[type="submit"]'); if (paymentButton) paymentButton.disabled = false; }
   }
 
   function closeDrawer() {
     $("#drawer-root").innerHTML = "";
     drawerTaskId = null;
+    drawerTaskSnapshot = null;
+    drawerArtifactPath = null;
     if (!$("#modal-root").children.length) document.body.style.overflow = "";
     previousFocus?.focus?.();
+  }
+
+  function refreshDrawer() {
+    if (!drawerTaskId || operationBusy || $("#modal-root").children.length) return;
+    const task = tasks().find(item => String(item.id) === drawerTaskId);
+    if (JSON.stringify(task || null) === drawerTaskSnapshot) return;
+    const body = $(".drawer-body");
+    const scrollTop = body?.scrollTop || 0;
+    const focused = $(".drawer")?.contains(document.activeElement) ? document.activeElement : null;
+    const focusAction = focused?.dataset.action;
+    const focusHref = focused?.getAttribute("href");
+    const preserveArtifact = task && (task.artifact_path || null) === drawerArtifactPath;
+    const artifact = preserveArtifact ? $("#artifact-container") : null;
+    const artifactScrollTop = artifact?.querySelector(".artifact-output")?.scrollTop || 0;
+    const artifactButton = preserveArtifact ? $('.drawer [data-action="artifact"]') : null;
+    renderDrawer(drawerTaskId);
+    if (!drawerTaskId) return;
+    if (artifact?.children.length && $("#artifact-container")) {
+      $("#artifact-container").replaceChildren(...artifact.childNodes);
+      const output = $("#artifact-container .artifact-output");
+      if (output) output.scrollTop = artifactScrollTop;
+    }
+    const button = $('.drawer [data-action="artifact"]');
+    if (button && artifactButton) { button.innerHTML = artifactButton.innerHTML; button.disabled = artifactButton.disabled; }
+    // Updating live details should keep the reader in place and avoid replaying
+    // the opening animation on every task-stage change.
+    $(".drawer").style.animation = "none";
+    $(".drawer-backdrop").style.animation = "none";
+    if (focused) {
+      const replacement = [...document.querySelectorAll('.drawer button, .drawer a[href]')].find(item => (focusAction && item.dataset.action === focusAction) || (focusHref && item.getAttribute("href") === focusHref));
+      (replacement || $('.drawer [data-action="close-drawer"]'))?.focus({ preventScroll: true });
+    }
+    $(".drawer-body").scrollTop = scrollTop;
+  }
+
+  function workPlanDetails(task) {
+    const boundedText = (value, limit) => typeof value === "string" ? value.trim().slice(0, limit) : "";
+    const boundedList = (value, limit, length) => Array.isArray(value) ? value.slice(0, limit).map(item => boundedText(item, length)).filter(Boolean) : [];
+    const preparation = boundedText(task.preparation_reason, 1200);
+    const preparationText = preparation && preparation !== task.reason ? `<div class="detail-label">Förberedelse</div><p class="detail-text">${escapeHTML(preparation)}</p>` : "";
+    const plan = task.work_plan;
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) return preparationText;
+    const summary = boundedText(plan.summary, 1200);
+    const steps = boundedList(plan.steps, 8, 400);
+    const sources = boundedList(plan.source_paths, 12, 240);
+    const targets = boundedList(plan.target_paths, 12, 240);
+    if (!summary && !steps.length && !sources.length && !targets.length) return preparationText;
+    return `${preparationText}<section class="work-plan" aria-label="Arbetsplan"><div class="detail-label">Arbetsplan</div>${summary ? `<p class="detail-text">${escapeHTML(summary)}</p>` : ""}${steps.length ? `<ol class="detail-text">${steps.map(step => `<li>${escapeHTML(step)}</li>`).join("")}</ol>` : ""}${sources.length ? `<div class="detail-label">Underlag</div><p class="detail-text">${sources.map(escapeHTML).join(" · ")}</p>` : ""}${targets.length ? `<div class="detail-label">Dokument som ska levereras</div><p class="detail-text">${targets.map(escapeHTML).join(" · ")}</p>` : ""}</section>`;
   }
 
   function renderDrawer(id) {
     const task = tasks().find(item => String(item.id) === String(id));
     if (!task) { closeDrawer(); return; }
     drawerTaskId = String(id);
+    drawerTaskSnapshot = JSON.stringify(task);
+    drawerArtifactPath = task.artifact_path || null;
     const url = safeURL(task.url);
     const retryable = ["blocked", "failed", "skipped"].includes(task.status);
-    $("#drawer-root").innerHTML = `<div class="drawer-backdrop" data-action="close-drawer"></div><section class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header class="drawer-header"><h2 id="drawer-title">Uppdragsdetaljer</h2><button class="icon-button" data-action="close-drawer" aria-label="Stäng detaljer">${icon("close")}</button></header><div class="drawer-body">${statusBadge(task.status)}<h3>${escapeHTML(task.title)}</h3><p class="drawer-repo">${escapeHTML(task.repo || "GitHub")}</p><div class="detail-grid"><div><div class="detail-label">Annonserad belöning</div><p class="detail-text">${reward(task, false)}</p></div><div><div class="detail-label">Uppdragstyp</div><p class="detail-text">${escapeHTML(task.kind || "Ej klassificerat")}</p></div></div><div class="detail-label">Senaste bedömning</div><p class="detail-text">${escapeHTML(task.reason || "Uppdraget har ännu inte bedömts.")}</p><div class="detail-grid"><div><div class="detail-label">Hittat</div><p class="detail-text">${escapeHTML(formatDate(task.created_at))}</p></div><div><div class="detail-label">Senast uppdaterat</div><p class="detail-text">${escapeHTML(formatDate(task.updated_at))}</p></div></div><div class="drawer-actions">${url ? `<a class="button button-secondary" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${icon("github")}Visa på GitHub</a>` : ""}${retryable ? `<button class="button button-secondary" data-action="retry"${operationBusy ? " disabled" : ""}>${icon("refresh")}Försök igen</button>` : ""}${["submitted", "awaiting_payment"].includes(task.status) ? `<button class="button button-primary" data-action="payment" data-payment-task="${escapeHTML(task.id)}">${icon("finance")}Registrera betalning</button>` : ""}</div>${task.artifact_path ? `<div class="detail-label">Arbetsresultat</div><button class="button button-secondary" data-action="artifact">${icon("file")}Läs leveransen</button><div id="artifact-container"></div>` : '<p class="drawer-info">En sparad leverans visas här när agenten har tagit fram ett arbetsresultat.</p>'}<p class="drawer-info">Den annonserade belöningen är ingen bekräftad intäkt. Registrera inbetalningen när du faktiskt har fått betalt.</p></div></section>`;
+    $("#drawer-root").innerHTML = `<div class="drawer-backdrop" data-action="close-drawer"></div><section class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header class="drawer-header"><h2 id="drawer-title">Uppdragsdetaljer</h2><button class="icon-button" data-action="close-drawer" aria-label="Stäng detaljer">${icon("close")}</button></header><div class="drawer-body">${statusBadge(task.status)}<h3>${escapeHTML(task.title)}</h3><p class="drawer-repo">${escapeHTML(task.repo || "GitHub")}</p><div class="detail-grid"><div><div class="detail-label">Annonserad belöning</div><p class="detail-text">${reward(task, false)}</p></div><div><div class="detail-label">Uppdragstyp</div><p class="detail-text">${escapeHTML(task.kind || "Ej klassificerat")}</p></div></div><div class="detail-label">Senaste bedömning</div><p class="detail-text">${escapeHTML(task.reason || "Uppdraget har ännu inte bedömts.")}</p>${workPlanDetails(task)}<div class="detail-grid"><div><div class="detail-label">Hittat</div><p class="detail-text">${escapeHTML(formatDate(task.created_at))}</p></div><div><div class="detail-label">Senast uppdaterat</div><p class="detail-text">${escapeHTML(formatDate(task.updated_at))}</p></div></div><div class="drawer-actions">${url ? `<a class="button button-secondary" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${icon("github")}Visa på GitHub</a>` : ""}${retryable ? `<button class="button button-secondary" data-action="retry"${operationBusy ? " disabled" : ""}>${icon("refresh")}Försök igen</button>` : ""}${["submitted", "awaiting_payment"].includes(task.status) ? `<button class="button button-primary" data-action="payment" data-payment-task="${escapeHTML(task.id)}">${icon("finance")}Registrera betalning</button>` : ""}</div>${task.artifact_path ? `<div class="detail-label">Arbetsresultat</div><button class="button button-secondary" data-action="artifact">${icon("file")}Läs leveransen</button><div id="artifact-container"></div>` : '<p class="drawer-info">En sparad leverans visas här när agenten har tagit fram ett arbetsresultat.</p>'}<p class="drawer-info">Den annonserade belöningen är ingen bekräftad intäkt. Registrera inbetalningen när du faktiskt har fått betalt.</p></div></section>`;
     document.body.style.overflow = "hidden";
   }
 
@@ -380,17 +435,19 @@
     else if (action === "retry" && drawerTaskId) await mutate(`/api/tasks/${encodeURIComponent(drawerTaskId)}/retry`, {}, "Uppdraget har lagts tillbaka för ett nytt försök.");
     else if (action === "artifact" && drawerTaskId) {
       const id = drawerTaskId;
+      const artifactPath = drawerArtifactPath;
       actionButton.disabled = true;
       try {
         const result = await api(`/api/tasks/${encodeURIComponent(id)}/artifact`);
-        if (drawerTaskId !== id) return;
+        if (drawerTaskId !== id || drawerArtifactPath !== artifactPath) return;
         const container = $("#artifact-container");
         const output = document.createElement("pre");
         output.className = "artifact-output";
         output.textContent = typeof result === "string" ? result : result.content || result.text || JSON.stringify(result, null, 2);
         container.replaceChildren(output);
-        actionButton.innerHTML = `${icon("check")}Leveransen visas nedan`;
-      } catch (error) { toast(error.message, true); actionButton.disabled = false; }
+        const currentButton = $('.drawer [data-action="artifact"]');
+        if (currentButton) currentButton.innerHTML = `${icon("check")}Leveransen visas nedan`;
+      } catch (error) { toast(error.message, true); if (drawerTaskId === id && drawerArtifactPath === artifactPath) { const currentButton = $('.drawer [data-action="artifact"]'); if (currentButton) currentButton.disabled = false; } }
     }
   });
 

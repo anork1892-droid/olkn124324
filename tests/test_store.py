@@ -29,7 +29,7 @@ class StoreTests(unittest.TestCase):
         reopened = Store(self.tmp.name)
         self.assertEqual(len(reopened.list_tasks()), 1)
         task = reopened.get_task(task_id)
-        self.assertEqual(task["status"], "working")
+        self.assertEqual(task["status"], "preparing")
         self.assertEqual(task["worker_id"], "worker-1")
         self.assertEqual(task["source_facts"], {"verified": True})
         self.assertEqual(task["title"], "Updated title")
@@ -42,7 +42,7 @@ class StoreTests(unittest.TestCase):
         claimed = [task["id"] for task in results if task]
         self.assertEqual(set(claimed), ids)
         self.assertEqual(len(claimed), len(ids))
-        self.assertTrue(all(task["status"] == "working" for task in self.store.list_tasks()))
+        self.assertTrue(all(task["status"] == "preparing" for task in self.store.list_tasks()))
 
     def test_advertised_reward_and_submission_never_count_as_earnings(self):
         task_id = self.task(status="submitted")

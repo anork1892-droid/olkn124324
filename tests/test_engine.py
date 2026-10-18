@@ -32,6 +32,12 @@ def delivery():
     return {"files": [{"path": "README.md", "content": "# Example\n\nUse the documented option for the example.\n"}], "summary": "Clarify the documented example."}
 
 
+def work_plan(paths=None, source_paths=None):
+    return {"feasible": True, "summary": "Clarify the README from existing documentation.",
+            "steps": ["Use the documented example to clarify the README."],
+            "source_paths": source_paths or ["README.md"], "target_paths": paths or ["README.md"]}
+
+
 class QualifierTests(unittest.TestCase):
     def test_open_maintainer_documentation_task_qualifies(self):
         task = qualify(issue())
@@ -318,7 +324,7 @@ class EngineTests(unittest.TestCase):
         self.github.repository_context.return_value = self.context
         self.model = Mock()
         self.model.model = "test:7b"
-        self.model.generate.side_effect = [delivery(), {"accepted": True, "findings": []}]
+        self.model.generate.side_effect = [work_plan(), delivery(), {"accepted": True, "findings": []}]
         self.submitter = Mock()
         self.submitter.configured = True
         self.submitter.submit.return_value = "https://github.com/owner/project/pull/9"
@@ -442,7 +448,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(updated["status"], "ready")
         self.assertTrue(Path(updated["artifact_path"]).is_file())
         self.assertTrue((Path(updated["artifact_path"]).parent / "files/README.md").is_file())
-        self.assertEqual(self.model.generate.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 3)
         self.submitter.submit.assert_not_called()
         self.assertEqual(self.store.get_state()["metrics"]["earned_sek"], 0)
 
@@ -469,7 +475,7 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(updated["source_facts"]["reward_currency_explicit"])
         self.assertFalse(updated["source_facts"]["reward_verified_paid"])
         self.assertEqual(self.github.issue.call_count, 2)
-        self.assertEqual(self.model.generate.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 3)
         self.submitter.submit.assert_called_once()
         metrics = self.store.get_state()["metrics"]
         self.assertEqual((metrics["earned_sek"], metrics["pending_sek"], metrics["net_sek"]), (0, 0, 0))
@@ -499,12 +505,15 @@ class EngineTests(unittest.TestCase):
 
     def test_review_rejection_keeps_artifacts_and_blocks_submission(self):
         self.store.update_settings({"running": True, "auto_submit": True})
-        self.model.generate.side_effect = [delivery(), {"accepted": False, "findings": ["Unverified assertion"]}]
+        rejected = {"accepted": False, "findings": ["Unverified assertion"]}
+        self.model.generate.side_effect = [work_plan(), delivery(), rejected, delivery(), rejected]
         task = self.task()
         self.engine._work("worker-1", task)
         updated = self.store.get_task(task["id"])
         self.assertEqual(updated["status"], "blocked")
         self.assertTrue(Path(updated["artifact_path"]).exists())
+        self.assertEqual(self.model.generate.call_count, 5)
+        self.assertIn("Unverified assertion", updated["reason"])
         self.submitter.submit.assert_not_called()
 
     def test_unknown_submission_outcome_is_not_retried(self):

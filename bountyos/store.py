@@ -219,7 +219,7 @@ class Store:
             task = self._task(conn.execute("SELECT * FROM tasks WHERE status='qualified' ORDER BY created_at, id LIMIT 1").fetchone())
             if task is None:
                 return None
-            self._update_task(conn, task, {"status": "working", "worker_id": worker_id, "attempts": int(task.get("attempts", 0)) + 1})
+            self._update_task(conn, task, {"status": "preparing", "worker_id": worker_id, "attempts": int(task.get("attempts", 0)) + 1})
             return self._task(conn.execute("SELECT * FROM tasks WHERE id=?", (task["id"],)).fetchone())
 
     def log(self, message: str, level: str = "info") -> None:
@@ -284,7 +284,7 @@ class Store:
             "metrics": {
                 "earned_sek": earned_ore / 100, "pending_sek": round(pending, 2),
                 "estimated_cost_sek": 0, "net_sek": earned_ore / 100,
-                "active_agents": sum(agent["status"] in {"scouting", "working", "reviewing", "checking", "submitting"} for agent in agents),
+                "active_agents": sum(agent["status"] in {"scouting", "preparing", "working", "reviewing", "checking", "submitting"} for agent in agents),
                 "completed_tasks": sum(task["status"] in {"ready", "submitted", "awaiting_payment", "paid"} for task in tasks),
             },
             "agents": agents, "tasks": tasks, "activity": activity,

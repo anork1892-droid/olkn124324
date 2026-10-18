@@ -6,9 +6,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bountyos.connectors import Ollama, delivery_schema, qualify
-from bountyos.engine import Engine, REVIEW_SYSTEM, WRITER_SYSTEM
+from bountyos.engine import Engine, PREPARE_SYSTEM, REVIEW_SYSTEM, WRITER_SYSTEM
 from bountyos.store import Store
-from test_engine import delivery, issue
+from test_engine import delivery, issue, work_plan
 
 
 PLACEHOLDER_REASON = (
@@ -45,7 +45,11 @@ class WriterPathTests(unittest.TestCase):
     def run_work(self, responses):
         task_id = self.store.upsert_task(qualify(issue()))
         task = self.store.claim_task("worker-1")
-        self.model.generate.side_effect = responses
+        plan = work_plan(paths=sorted(self.context["files"]))
+        if callable(responses):
+            self.model.generate.side_effect = lambda system, data, **kwargs: plan if system == PREPARE_SYSTEM else responses(system, data, **kwargs)
+        else:
+            self.model.generate.side_effect = [plan, *responses]
         self.engine._work("worker-1", task)
         return self.store.get_task(task_id)
 
@@ -59,14 +63,15 @@ class WriterPathTests(unittest.TestCase):
         task = self.run_work([delivery(), {"accepted": True, "findings": []}])
 
         self.assertEqual(task["status"], "ready")
-        writer = self.model.generate.call_args_list[0]
+        writer = self.model.generate.call_args_list[1]
         self.assertEqual(writer.args[0], WRITER_SYSTEM)
         self.assertNotIn("docs/name.md", writer.args[0])
         self.assertEqual(writer.args[1]["editable_paths"], ["README.md", "docs/existing.md"])
         allowed = writer.kwargs["schema"]["properties"]["files"]["items"]["properties"]["path"]["enum"]
         self.assertEqual(set(allowed), set(self.context["files"]))
-        self.assertEqual(self.model.generate.call_count, 2)
-        self.assertEqual(self.model.generate.call_args_list[1].args[0], REVIEW_SYSTEM)
+        self.assertEqual(self.model.generate.call_count, 3)
+        self.assertEqual(self.model.generate.call_args_list[0].args[0], PREPARE_SYSTEM)
+        self.assertEqual(self.model.generate.call_args_list[2].args[0], REVIEW_SYSTEM)
         self.submitter.submit.assert_not_called()
 
     def test_unread_path_is_regenerated_then_independently_reviewed(self):
@@ -74,8 +79,8 @@ class WriterPathTests(unittest.TestCase):
         task = self.run_work([wrong, delivery(), {"accepted": True, "findings": []}])
 
         self.assertEqual(task["status"], "ready")
-        self.assertEqual(self.model.generate.call_count, 3)
-        initial, corrected, reviewed = self.model.generate.call_args_list
+        self.assertEqual(self.model.generate.call_count, 4)
+        initial, corrected, reviewed = self.model.generate.call_args_list[1:]
         self.assertEqual(initial.args[0], WRITER_SYSTEM)
         self.assertEqual(corrected.args[0], WRITER_SYSTEM)
         self.assertEqual(reviewed.args[0], REVIEW_SYSTEM)
@@ -95,7 +100,7 @@ class WriterPathTests(unittest.TestCase):
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("docs/another.md", task["reason"])
-        self.assertEqual(self.model.generate.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 3)
         self.assert_no_delivery(task)
 
     def test_empty_correction_reports_unsupported_work_without_creating_a_file(self):
@@ -103,7 +108,7 @@ class WriterPathTests(unittest.TestCase):
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("requires a new file", task["reason"])
-        self.assertEqual(self.model.generate.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 3)
         self.assert_no_delivery(task)
 
     def test_initial_empty_result_is_not_retried(self):
@@ -111,7 +116,7 @@ class WriterPathTests(unittest.TestCase):
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("Insufficient evidence", task["reason"])
-        self.assertEqual(self.model.generate.call_count, 1)
+        self.assertEqual(self.model.generate.call_count, 2)
         self.assert_no_delivery(task)
 
     def test_unsafe_path_is_not_sent_for_corrective_generation(self):
@@ -119,7 +124,7 @@ class WriterPathTests(unittest.TestCase):
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("otillåten sökväg", task["reason"])
-        self.assertEqual(self.model.generate.call_count, 1)
+        self.assertEqual(self.model.generate.call_count, 2)
         self.assert_no_delivery(task)
 
     def test_oversized_unread_file_is_not_sent_for_corrective_generation(self):
@@ -129,7 +134,7 @@ class WriterPathTests(unittest.TestCase):
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("för stor", task["reason"])
-        self.assertEqual(self.model.generate.call_count, 1)
+        self.assertEqual(self.model.generate.call_count, 2)
         self.assert_no_delivery(task)
 
     def test_corrected_path_still_cannot_claim_unperformed_tests(self):
@@ -139,17 +144,19 @@ class WriterPathTests(unittest.TestCase):
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("påstår att tester", task["reason"])
-        self.assertEqual(self.model.generate.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 3)
         self.assert_no_delivery(task)
 
     def test_corrected_path_still_requires_reviewer_acceptance(self):
-        task = self.run_work([unread_delivery(), delivery(), {
-            "accepted": False, "findings": ["The requested evidence is missing."]}])
+        rejected = {"accepted": False, "findings": ["The requested evidence is missing."]}
+        task = self.run_work([unread_delivery(), delivery(), rejected, delivery(), rejected])
 
         self.assertEqual(task["status"], "blocked")
         self.assertIn("requested evidence", task["reason"])
         self.assertTrue(Path(task["artifact_path"]).is_file())
-        self.assertEqual(self.model.generate.call_count, 3)
+        self.assertEqual(self.model.generate.call_count, 6)
+        self.assertEqual([call.args[0] for call in self.model.generate.call_args_list],
+                         [PREPARE_SYSTEM, WRITER_SYSTEM, WRITER_SYSTEM, REVIEW_SYSTEM, WRITER_SYSTEM, REVIEW_SYSTEM])
         self.submitter.submit.assert_not_called()
 
     def test_pause_during_generation_prevents_retry(self):
@@ -160,7 +167,7 @@ class WriterPathTests(unittest.TestCase):
         task = self.run_work(pause)
 
         self.assertEqual(task["status"], "qualified")
-        self.assertEqual(self.model.generate.call_count, 1)
+        self.assertEqual(self.model.generate.call_count, 2)
         self.assert_no_delivery(task)
 
     def test_stop_during_generation_prevents_retry(self):
@@ -171,7 +178,7 @@ class WriterPathTests(unittest.TestCase):
         task = self.run_work(stop)
 
         self.assertEqual(task["status"], "qualified")
-        self.assertEqual(self.model.generate.call_count, 1)
+        self.assertEqual(self.model.generate.call_count, 2)
         self.assert_no_delivery(task)
 
     def test_pause_during_successful_correction_prevents_review(self):
@@ -186,7 +193,7 @@ class WriterPathTests(unittest.TestCase):
         task = self.run_work(pause_on_correction)
 
         self.assertEqual(task["status"], "qualified")
-        self.assertEqual(self.model.generate.call_count, 2)
+        self.assertEqual(self.model.generate.call_count, 3)
         self.assert_no_delivery(task)
 
 
@@ -237,7 +244,7 @@ class WriterPathMigrationTests(unittest.TestCase):
             {"artifact_path": "/saved/delivery.md"},
             {"submission_url": "https://github.com/owner/project/pull/9"},
             {"writer_path_recheck_v1": True},
-            {"reason": PLACEHOLDER_REASON.replace("docs/name.md", "docs/real-new-file.md")},
+            {"reason": PLACEHOLDER_REASON.replace("docs/name.md", "docs/real-new-file.md"), "new_document_recheck_v1": True},
             {"reason": "Granskningen godkände inte leveransen."},
             *({"status": status} for status in ("failed", "ready", "submitted", "awaiting_payment", "paid")),
         ]

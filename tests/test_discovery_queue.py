@@ -99,7 +99,7 @@ class DiscoveryQueueTests(unittest.TestCase):
         self.github.search.return_value = [self.url(n) for n in range(13, 25)]
         self.scan()
         self.assertEqual(self.github.issue.call_count, 13)
-        self.assertEqual(self.store.claim_task('worker-1')['status'], 'working')
+        self.assertEqual(self.store.claim_task('worker-1')['status'], 'preparing')
         self.assertIn(self.url(24), [c.args[0] for c in self.github.issue.call_args_list])
 
     def test_no_work_summary_explains_saved_blockers(self):
