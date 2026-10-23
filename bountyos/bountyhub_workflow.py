@@ -226,7 +226,7 @@ class BountyHubWorkflow:
             self._submit_ready(self.store.get_task(task["id"]))
         except ConnectorError as exc:
             if not self._work_paused(task):
-                self.store.update_task(task["id"], status="blocked", reason=str(exc), blocked_stage=stage)
+                self._record_work_failure(task, exc, stage)
                 self.store.log("Kodagenten stoppade ett uppdrag: " + str(exc), level="warning")
         except Exception:
             if not self._work_paused(task):

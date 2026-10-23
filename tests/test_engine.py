@@ -369,6 +369,39 @@ class EngineTests(unittest.TestCase):
         self.github.search.assert_not_called()
         self.model.generate.assert_not_called()
 
+    def test_repository_login_failure_after_attempt_is_requeued_once(self):
+        task = self.legacy_blocked_task(101, reason="GitHub kräver inloggning för att visa källan.",
+                                        attempts=1, worker_id="worker-1", blocked_stage="preparation")
+        with patch.object(self.engine, "_loop"):
+            self.engine.start()
+            self.engine.stop()
+            updated = self.store.get_task(task["id"])
+            self.assertEqual(updated["status"], "discovered")
+            self.assertEqual(updated["attempts"], 1)
+            self.store.update_task(task["id"], status="blocked", reason=task["reason"])
+            self.engine.start()
+            self.engine.stop()
+            self.assertEqual(self.store.get_task(task["id"])["status"], "blocked")
+
+    def test_transient_preparation_reads_retry_with_cap_and_preserve_deliveries(self):
+        from bountyos.connectors import NetworkFailure
+        task = self.legacy_blocked_task(102, attempts=1, blocked_stage="preparation")
+        for count in range(1, 4):
+            self.engine._record_work_failure(task, NetworkFailure("network"), "preparation")
+            updated = self.store.get_task(task["id"])
+            self.assertEqual(updated["read_retry_count"], count)
+            self.engine._retry_due_reads()
+            self.assertEqual(self.store.get_task(task["id"])["status"], "blocked")
+            self.store.update_task(task["id"], read_retry_at="2000-01-01T00:00:00+00:00")
+            self.engine._retry_due_reads()
+            self.assertEqual(self.store.get_task(task["id"])["status"], "discovered")
+        self.engine._record_work_failure(task, NetworkFailure("network"), "preparation")
+        self.assertIsNone(self.store.get_task(task["id"])["read_retry_at"])
+        self.store.update_task(task["id"], read_retry_count=0, artifact_path="saved.json")
+        self.engine._record_work_failure(task, NetworkFailure("network"), "preparation")
+        self.assertIsNone(self.store.get_task(task["id"])["read_retry_at"])
+        self.assertEqual(self.store.get_task(task["id"])["artifact_path"], "saved.json")
+
     def test_api_reader_requeues_only_untouched_access_failures_once(self):
         reason = "GitHub kräver inloggning för att visa källan."
         fresh = self.legacy_blocked_task(91, reason=reason)

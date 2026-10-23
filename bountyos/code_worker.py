@@ -16,7 +16,7 @@ import zipfile
 from pathlib import PurePosixPath
 from urllib import error, request
 
-from .connectors import ConnectorError, embedded_json, issue_parts, repository_commit, walk
+from .connectors import LoginRedirect, NetworkFailure, ConnectorError, embedded_json, issue_parts, repository_commit, walk
 
 
 MAX_ARCHIVE_BYTES = 2_000_000
@@ -163,21 +163,25 @@ class CodeWorker:
             with self.github.http.opener.open(req, timeout=30) as response:
                 raw = response.read(MAX_ARCHIVE_BYTES + 1)
         except (error.URLError, OSError, TimeoutError):
-            raise ConnectorError("Det versionsbundna kodarkivet kunde inte hämtas från codeload.github.com.") from None
+            raise NetworkFailure("Det versionsbundna kodarkivet kunde inte hämtas från codeload.github.com.") from None
         return raw
 
     def context(self, issue):
         repo, _ = issue_parts(issue.get("url", ""))
         if issue.get("repo") != repo or any(part in {".", ".."} for part in repo.split("/")):
             raise ConnectorError("Koduppdragets repository kunde inte verifieras.")
-        roots = embedded_json(self.github.http.get(f"https://github.com/{repo}"))
-        branches = {item["defaultBranch"] for root in roots for item in walk(root) if isinstance(item.get("defaultBranch"), str)}
-        if len(branches) != 1:
-            raise ConnectorError("Kodprojektets standardgren kunde inte fastställas.")
-        branch = branches.pop()
-        commit = repository_commit(roots, branch)
-        if not commit:
-            raise ConnectorError("Kodagenten kräver en verifierad exakt Git-version av hela underlaget.")
+        try:
+            roots = embedded_json(self.github.http.get(f"https://github.com/{repo}"))
+            branches = {item["defaultBranch"] for root in roots for item in walk(root) if isinstance(item.get("defaultBranch"), str)}
+            if len(branches) != 1:
+                raise ConnectorError("Kodprojektets standardgren kunde inte fastställas.")
+            branch = branches.pop()
+            commit = repository_commit(roots, branch)
+            if not commit:
+                raise ConnectorError("Kodagenten kräver en verifierad exakt Git-version av hela underlaget.")
+        except LoginRedirect:
+            from .github_api import repository_snapshot
+            branch, commit = repository_snapshot(self.github.http, repo)
         files = read_snapshot(self._download_snapshot(repo, commit))
         targets = [path for path in files if implementation_path(path)]
         if not targets:

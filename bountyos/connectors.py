@@ -25,6 +25,10 @@ class ConnectorError(RuntimeError):
     pass
 
 
+class NetworkFailure(ConnectorError):
+    """A retryable connection failure, distinct from an unsupported task."""
+
+
 class RateLimited(ConnectorError):
     pass
 
@@ -123,7 +127,7 @@ class HTTP:
             else:
                 message = "Anslutningen misslyckades. Kontrollera nätverk och att tjänsten körs."
             self._backoff(reason=message)
-            raise ConnectorError(message) from None
+            raise NetworkFailure(message) from None
 
     def _backoff(self, retry_after=None, *, reason=None):
         with self._lock:
@@ -228,9 +232,9 @@ def safe_doc_path(path):
     if not re.fullmatch(r"[A-Za-z0-9_./-]+", path):
         return False
     file = PurePosixPath(path)
-    if file.name.lower() in {"agents.md", "skill.md", "secrets.md", "credentials.md"}:
+    if re.fullmatch(r"(?:agents?|skills?|secrets?|credentials?)(?:[._-].*)?\.(?:md|txt)", file.name, re.I):
         return False
-    return path in {"README.md", "FAQ.md"} or (parts[0] == "docs" and file.suffix.lower() in {".md", ".txt"})
+    return (len(parts) == 1 or parts[0] in {"docs", "doc", "documentation"}) and file.suffix.lower() in {".md", ".txt"}
 
 
 def requested_document_paths(issue):
@@ -522,7 +526,11 @@ class GitHub:
     def repository_context(self, issue):
         """Read bounded docs and verify explicit new targets at a pinned snapshot."""
         repo = issue["repo"]
-        root = self.http.get(f"https://github.com/{repo}")
+        try:
+            root = self.http.get(f"https://github.com/{repo}")
+        except LoginRedirect:
+            from .github_api import documentation_context
+            return documentation_context(self.http, issue)
         branch = None
         requested, creation_targets = requested_document_paths(issue)
         candidates = requested + ["README.md", "FAQ.md"]
@@ -535,7 +543,8 @@ class GitHub:
                 if safe_doc_path(path):
                     candidates.append(path)
         if not branch:
-            raise ConnectorError("Kunde inte fastställa repositoryts standardgren.")
+            from .github_api import documentation_context
+            return documentation_context(self.http, issue)
         commit = repository_commit(roots, branch)
         ref = commit or branch
         # Root listing normally does not include files under docs/.
@@ -545,9 +554,13 @@ class GitHub:
                 for item in walk(data):
                     if safe_doc_path(item.get("path")):
                         candidates.append(item["path"])
+        except LoginRedirect:
+            from .github_api import documentation_context
+            return documentation_context(self.http, issue)
         except HTTPFailure as exc:
             if exc.status_code != 404:
-                raise ConnectorError("Dokumentlistan kunde inte hämtas: " + str(exc)) from None
+                exc.args = ("Dokumentlistan kunde inte hämtas: " + str(exc),)
+                raise
         documents, missing_targets = {}, []
         checked = list(dict.fromkeys(candidates))[:10]
         for path in checked:
@@ -559,9 +572,13 @@ class GitHub:
                     if path in creation_targets:
                         missing_targets.append(path)
                     continue
-                raise ConnectorError("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
+                exc.args = ("Dokumentet " + path + " kunde inte hämtas: " + str(exc),)
+                raise
+            except LoginRedirect:
+                from .github_api import documentation_context
+                return documentation_context(self.http, issue)
             except ConnectorError as exc:
-                raise ConnectorError("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
+                raise type(exc)("Dokumentet " + path + " kunde inte hämtas: " + str(exc)) from None
         if not documents:
             raise ConnectorError("Inga stödda dokument hittades i målprojektet. Kontrollerade sökvägar: " + ", ".join(checked))
         context = {"repo": repo, "branch": branch, "files": documents, "new_files": missing_targets if commit else []}

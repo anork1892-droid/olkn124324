@@ -79,3 +79,64 @@ def read_issue(http, url):
             "linkedPullRequests": {"nodes": references},
             "timelineItems": {"nodes": comments, "pageInfo": {"hasNextPage": not complete, "hasPreviousPage": False}},
             "read_source": "github_public_api"}
+
+
+def repository_snapshot(http, repo):
+    """Resolve a public repository's default branch to an immutable commit."""
+    from urllib.parse import quote
+    issue_parts(f"https://github.com/{repo}/issues/1")
+    base = f"https://api.github.com/repos/{repo}"
+    data = http.json(base, limit=500_000)
+    if (not isinstance(data, dict) or str(data.get("full_name", "")).casefold() != repo.casefold()
+            or not isinstance(data.get("default_branch"), str) or not 1 <= len(data["default_branch"]) <= 200):
+        raise ConnectorError("GitHub API kunde inte verifiera projektets standardgren.")
+    branch = data["default_branch"]
+    commit = http.json(base + "/commits/" + quote(branch, safe=""), limit=1_000_000)
+    if not isinstance(commit, dict) or not re.fullmatch(r"[0-9a-f]{40}", str(commit.get("sha", ""))):
+        raise ConnectorError("GitHub API kunde inte verifiera projektets exakta Git-version.")
+    return branch, commit["sha"]
+
+
+def documentation_context(http, issue):
+    import base64
+    import hashlib
+    from urllib.parse import quote
+    from .connectors import safe_doc_path, requested_document_paths
+    repo = issue["repo"]
+    branch, commit = repository_snapshot(http, repo)
+    base = f"https://api.github.com/repos/{repo}"
+    tree = http.json(base + f"/git/trees/{commit}?recursive=1", limit=2_000_000)
+    if (not isinstance(tree, dict) or not re.fullmatch(r"[0-9a-f]{40}", str(tree.get("sha", ""))) or not isinstance(tree.get("tree"), list)
+            or len(tree["tree"]) > 20_000):
+        raise ConnectorError("GitHub API kunde inte läsa projektets dokumentlista.")
+    requested, creation_targets = requested_document_paths(issue)
+    paths = [item["path"] for item in tree["tree"] if isinstance(item, dict) and item.get("type") == "blob"
+             and item.get("mode") == "100644" and safe_doc_path(item.get("path"))]
+    # Prioritize requested paths and root guides, then other docs. Missing files
+    # require a contents-API 404, never mere absence from a possibly truncated tree.
+    candidates = list(dict.fromkeys(requested + ["README.md", "FAQ.md"] + sorted(paths, key=lambda p: ("/" in p, p))))[:10]
+    files, missing = {}, []
+    for path in candidates:
+        try:
+            value = http.json(base + "/contents/" + quote(path, safe="/") + "?ref=" + commit, limit=180_000)
+        except HTTPFailure as exc:
+            if exc.status_code != 404:
+                raise
+            if path in creation_targets:
+                missing.append(path)
+            continue
+        if (not isinstance(value, dict) or value.get("type") != "file" or value.get("path") != path
+                or value.get("encoding") != "base64" or value.get("target") or value.get("submodule_git_url")
+                or not isinstance(value.get("content"), str)):
+            raise ConnectorError("Dokumentet " + path + " kunde inte verifieras via GitHub API.")
+        try:
+            raw = base64.b64decode("".join(value["content"].split()), validate=True)
+            digest = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+            if len(raw) > 100_000 or digest != value.get("sha"):
+                raise ValueError()
+            files[path] = raw.decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            raise ConnectorError("Dokumentet " + path + " har ogiltigt eller för stort innehåll.") from None
+    if not files:
+        raise ConnectorError("Inga stödda dokument hittades i målprojektet via GitHub API. Kontrollerade sökvägar: " + ", ".join(candidates))
+    return {"repo": repo, "branch": branch, "commit": commit, "files": files, "new_files": missing}
