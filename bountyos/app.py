@@ -30,6 +30,11 @@ class SettingsUpdate(BaseModel):
     poll_interval_minutes: StrictInt | None = Field(default=None, ge=1, le=1440)
     search_enabled: StrictBool | None = None
     daily_budget_sek: StrictInt | None = Field(default=None, ge=0, le=0)
+    bountyhub_enabled: StrictBool | None = None
+    bountyhub_docs_enabled: StrictBool | None = None
+    bountyhub_code_enabled: StrictBool | None = None
+    bountyhub_assume_usd: StrictBool | None = None
+    bountyhub_max_sek: StrictInt | None = Field(default=None, ge=1, le=100000)
 
 
 class ControlRequest(BaseModel):

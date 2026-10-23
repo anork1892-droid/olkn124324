@@ -1,6 +1,6 @@
 # BountyOS
 
-En lokal webbapp som samlar bounties, fördelar dokumentationsarbete mellan agenter och följer leveranser och betalningar. Dashboarden är på svenska. SQLite sparar arbetskön, inställningar och historik mellan omstarter.
+En lokal webbapp som samlar bounties, fördelar dokumentation och små Python-ändringar mellan specialiserade agenter och följer leveranser och betalningar. Dashboarden är på svenska. SQLite sparar arbetskön, inställningar och historik mellan omstarter.
 
 **Budgeten är 0 kr i betalda AI-anrop och köpta tjänster.** Den här versionen använder en lokal Ollama-modell och innehåller ingen anslutning till betalda modell-API:er. Datorn och modellen måste vara igång för att agenterna ska arbeta. Molnmiljön för denna utvecklingssession är inte en garanterad server som kör dygnet runt.
 
@@ -17,6 +17,26 @@ En lokal webbapp som samlar bounties, fördelar dokumentationsarbete mellan agen
 
 Låt Ollama och BountyOS terminalfönster vara igång. Datorn behöver vara vaken för att arbetet ska fortsätta; dashboardfliken kan stängas. En 3B-modell tar mindre minne men kan behöva avvisa fler svåra uppdrag. Hastighet och faktisk leveranskvalitet måste prövas på din dator. Windows-kommandofilerna har granskats men inte körts i en riktig Windows-miljö här.
 
+#### BountyHub: två specialister
+
+BountyHub har en egen sökare, en dokumentationsagent och en agent för små Python-ändringar. Arbetsagenterna delar din befintliga Ollama-modell och arbetar en i taget när BountyHub är aktiverat. Ingen extra modell eller betald API-tjänst behövs. De har separata inställningar för aktivering och använder samma beständiga uppdragskö som den vanliga GitHub-sökningen, så ett originalärende inte ger dubbla leveranser.
+
+Sökaren läser BountyHubs offentliga katalog sida för sida och sparar sin position. Vid katalogfel används publika BountyHub-annonser i GitHubs index som reservkälla; aktuell täckning visas i Anslutningar. Före arbete och inlämning läses originalärendet och den aktuella BountyHub-annonsen igen. Återkallade eller upptagna uppdrag stoppas. Eventuella extra krav på BountyHub ingår i agentens underlag; ändrade krav efter granskningen stoppar inlämningen. En annons kan ange en utlovad belöning som ännu inte är finansierad.
+
+Belöningar runt 1 000 kr och 100–125 dollar är ett riktmärke. Standardinställningen prioriterar uppskattade belöningar under 1 500 kr; den väljer inte bort ett genomförbart uppdrag enbart för att summan är högre. `$` kan enligt inställningen räknas som USD för urvalet, med tydlig märkning. Originalvalutan bevaras. En daterad referenskurs från Frankfurter används när den är tillgänglig; utebliven valutaomräkning stoppar inte arbetet och ingen uppskattning bokförs som intäkt.
+
+Dokumentationsagenten använder planering, källunderlag, granskning och högst ett förbättringsförsök. Kodagenten börjar med små projekt som använder Pythons standardbibliotek och har fungerande `unittest`-tester under `tests/`. Den kan ändra högst två befintliga implementationsfiler och lägga till ett regressionstest, totalt högst 150 tillagda eller borttagna rader. Underlaget begränsas till 30 Pythonfiler och 28 000 tecken. Större projekt, externa beroenden, hårdvarukrav och omfattande funktioner ligger utanför denna version.
+
+För kodagentens automatiska tester på Windows:
+
+1. Installera och starta [Docker Desktop](https://www.docker.com/products/docker-desktop/) med Linux-containrar. Följ installationens anvisning om WSL 2 eller omstart om den behövs.
+2. Öppna Terminal eller Kommandotolken och kör `docker pull python:3.12-slim` en gång.
+3. Välj **Inställningar → Kontrollera** i BountyOS. Anslutningen för kodtester ska vara ansluten. Låt Docker Desktop vara igång tillsammans med Ollama och BountyOS.
+
+Kod körs i en tillfällig container utan nätverk, med skrivskyddat projektunderlag, resursgränser och tidsgräns. Programmet installerar inga projektberoenden och kör inga projektskript på Windows-värden. Om Docker saknas väntar kodagenten; dokumentationsarbetet kan fortsätta. Befintliga tester måste först lyckas. Det nya regressionstestet ska sedan hitta originalfelet, och alla tester ska lyckas efter kodändringen. Modellen får ett begränsat korrigeringsförsök och en separat granskning kan stoppa även en ändring vars tester lyckas. Uppdragsdetaljerna visar de observerade testresultaten.
+
+**Automatisk inlämning** kan skapa både dokumentations- och kod-PR:er med ansluten GitHub-åtkomst. Kodens testade commit måste fortfarande vara projektets aktuella version. BountyHub kräver dessutom att PR-länken registreras som ett claim med samma GitHub-konto på deras webbplats. Appen visar **Registrera PR på BountyHub** efter publicering; det steget är fortfarande manuellt. Publicerad eller mergad PR betyder inte accepterad bounty eller mottagen betalning.
+
 #### Om Scout väntar och uppdragen står som Hittat
 
 Scout börjar söka när programmet startar och söker igen en minut efter varje avslutad omgång som standard. Sökningen fungerar även när arbetsagenterna är pausade eller Ollama inte är ansluten. GitHubs väntetider kan förlänga pausen. Nästa automatiska sökning visas på Scouts kort. Du kan välja Pausa sökning, Starta sökning eller Sök nu; en paus sparas mellan omstarter. Sökintervallet kan ändras i Inställningar. Äldre installationers standardintervall på 30 minuter uppdateras en gång till en minut; andra valda intervall bevaras. **Hittat** betyder att ett uppdrag är registrerat men ännu inte utvalt för arbete. När Scout ger statusen **Utvalt** och den lokala modellen är ansluten reserveras uppdraget som **Granskar underlag**. Originaluppdraget och källdokumenten kontrolleras igen och modellen tar fram en konkret arbetsplan med källor, steg och mål. Först efter en giltig plan ändras statusen till **Pågår**. Planen visas i uppdragsdetaljerna. Klicka på uppdraget och läs **Senaste bedömning** för orsaken; Scouts kort visar resultatet av senaste sökningen och eventuella fel.
@@ -25,7 +45,7 @@ Redan hittade uppdrag granskas före sökningen efter nya. Tillfälliga läsfel 
 
 Sökningen växlar mellan riktade sökningar efter dokumentation i ärendets titel med en bounty i titeln eller en bounty-etikett, och ärenden med etiketten `docs`/`documentation` och en bounty i beskrivningen. FAQ och stavning ingår. Varje sökfråga följer GitHubs sidantal upp till 100 resultatsidor. Vid sista eller tom sida börjar just den sökfrågan om med de senaste träffarna, så samma annonser kan återkomma. Framstegen sparas lokalt och fortsätter efter omstart. När en sida bara innehåller kända träffar eller är tom provar Scout upp till tre söksidor per omgång med vanliga väntetider. Alla nya träffar sparas före granskning, även om gränsen på 20 ärendeläsningar nås eller nätverket tillfälligt slutar fungera. Loggen skiljer mellan unika träffar, nya träffar, redan kända träffar och granskade uppdrag. Om inget är redo för arbete visas de vanligaste hindren bland sparade uppdrag. Uppdrag utan verifierbart belopp eller med föreslagen belöning blir **Bortvalt**. Oklara betalningsvillkor, reservationer eller arbete utanför agentens stöd blir **Blockerat**. Dessa uppdrag ligger kvar med en förklaring men granskas inte om vid varje sökning. Dokumentation om exempelvis GPU-stöd eller befintliga driftsättningsinstruktioner avvisas inte enbart på grund av ämnet; krav på faktisk kodändring, testkörning eller driftsättning ligger fortfarande utanför stödet. Tidigare avslag på dokumentationsomfattning utan påbörjat arbete köas en gång för ny granskning efter uppdateringen. Om uppdragsgivaren ändrar villkoren kan du öppna uppdraget och välja **Försök igen**. Sökresultatet och Scouts kort visar hur många uppdrag som valdes ut, valdes bort eller blockerades.
 
-En annons med exempelvis `$25` kan väljas ut om resten av granskningen godkänns. Appen visar beloppet som `$` med ospecificerad dollarvaluta och antar ingen växelkurs eller USD. Uppdragsgivarens projektroll kontrolleras även i de senaste kommentarerna som GitHub visar för samma ärende. Saknad rollinformation skiljs från en uttrycklig roll som inte bekräftar projektansvar. Ett botnamn eller en bounty-etikett bevisar inte vem som ansvarar för betalningen.
+En vanlig GitHub-annons med exempelvis `$25` kan väljas ut om resten av granskningen godkänns. Appen visar originalbeloppet som `$` med ospecificerad dollarvaluta. BountyHub har en separat, märkt uppskattning för urvalet enligt inställningen ovan. Uppdragsgivarens projektroll kontrolleras även i de senaste kommentarerna som GitHub visar för samma ärende. Saknad rollinformation skiljs från en uttrycklig roll som inte bekräftar projektansvar. En bounty-etikett bevisar inte betalning; BountyHubs egna annonser kan ange utlovad ersättning som ännu inte betalats in.
 
 Vid uppdatering återköas tidigare obearbetade uppdrag som stoppades av de gamla valuta- eller maintainerreglerna för en ny kontroll. En färsk granskning avgör om de går att utföra; de blir inte direkt utvalda. Sparade leveranser och uppdrag som redan har påbörjats eller skickats in återköas inte av denna rättning.
 
@@ -91,7 +111,7 @@ Modelladressen måste peka på loopback. Programmet skickar inte modellförfråg
 
 ## Automatiskt arbetsflöde
 
-1. Sökning läser offentliga GitHub-annonser och sparar dem utan dubbletter.
+1. Sökning läser BountyHubs katalog och offentliga GitHub-annonser och sparar originalärenden utan dubbletter. Kodspecialistens testflöde beskrivs ovan; följande skrivsteg gäller dokumentation.
 2. Urvalet söker avgränsade dokumentationsuppdrag med konkreta leveranskrav och annonserad belöning från en projektansvarig. Gamla annonser, förslag på belopp, reservationer och konkurrerande lösningar kan stoppa ett automatiskt genomförande.
 3. Arbetsagenten kontrollerar underlag och tar fram en plan innan skrivstart. Utpekade dokument prioriteras inom gränsen på tio hämtade filer. En omöjlig eller ogiltig plan stoppas här med förklaring. Den lokala modellens bedömning är inte ett bevis på att uppdraget kan slutföras.
 4. Agenten följer planen och ändrar inlästa dokument eller skapar uttryckligt beställda nya dokument på verifierat saknade sökvägar. Befintligt dokumentunderlag krävs i båda fallen.
@@ -102,7 +122,7 @@ Inför inlämning av nya dokument kontrolleras att de fortfarande saknas och att
 
 En lokal planering körs före skrivning. Högst en innehållsrevision och ett korrigeringsförsök av filvalet per utkast tillåts; inga betalda API-anrop tillkommer. En större lokal modell kan väljas med befintlig `BOUNTYOS_MODEL`, men uppdateringen byter inte modell automatiskt.
 
-Arbetsagenten skriver dokumentation. Den kör inte godtycklig kod från främmande projekt och utför inte säkerhetstester, enkäter eller uppdrag som behöver fysisk utrustning. Den sparade pilotundersökningen är historiska researchuppgifter, inte nya lediga arbeten.
+Dokumentationsagenten skriver från inläst underlag. BountyHubs kodagent hanterar de små Python-projekt och isolerade tester som beskrivs ovan. Ingen agent utför säkerhetstester, enkäter eller uppdrag som behöver fysisk utrustning. Den sparade pilotundersökningen är historiska researchuppgifter, inte nya lediga arbeten.
 
 GitHub-åtkomst för inlämning behöver kunna läsa källprojektet, skapa en fork/gren och öppna en pull request. Använd en säker tokenbindning i körmiljön eller datorns tjänstekonfiguration. Skriv aldrig token i Git, loggar eller chatten. Befintliga `GH_TOKEN`/`GITHUB_TOKEN` återanvänds. Sökning av publika GitHub-sidor behöver ingen token.
 
@@ -111,7 +131,7 @@ GitHub-åtkomst för inlämning behöver kunna läsa källprojektet, skapa en fo
 - **Mottaget:** faktiska betalningar som du registrerat med SEK-belopp och unik transaktionsreferens. Inbyggd anslutning till bank eller PayPal saknas i denna version; beloppet är manuellt registrerat, inte bankverifierat av programmet.
 - **Väntande:** annonserad ersättning för inskickade uppdrag. Belopp i andra valutor växlas inte till SEK utan en verifierad kurs. En merge är inte bevis på betalning.
 - **API-kostnad:** 0 kr eftersom endast lokal modell används. El, internet och befintlig hårdvara mäts inte av programmet.
-- **Autoskalning:** kan öka antalet lokala arbetare inom ditt valda tak när kön och registrerade intäkter motiverar det. Den hyr aldrig servrar eller köper API-krediter. Fler arbetare ger inte alltid högre fart om de delar på samma modell.
+- **Autoskalning:** BountyHub-specialisterna delar en arbetsplats och kör ett uppdrag i taget. Om BountyHub avaktiveras kan den vanliga arbetskön använda det valda taket och autoskalningen. Ingen server hyrs och inga API-krediter köps; modellanrop använder fortfarande en gemensam lokal modell.
 
 Dashboarden börjar på 0 kr och saknar simulerade intäkter. Ett annonserat belopp innebär inte en garanterad utbetalning.
 
@@ -135,7 +155,10 @@ Tester använder kontrollerade nätverks- och modellsvar och skickar inga riktig
 - `bountyos/store.py`: SQLite, inställningar, agentstatus och betalningar.
 - `bountyos/engine.py`: schemaläggning, arbetsfördelning och leveransflöde.
 - `bountyos/connectors.py`: GitHub och lokal modell.
+- `bountyos/bountyhub.py`: BountyHub-källor, urval och daterade valutauppskattningar.
+- `bountyos/bountyhub_workflow.py`: specialisternas kö och arbetsflöde.
+- `bountyos/code_worker.py`, `bountyos/code_sandbox.py`: små Python-ändringar och isolerade regressionstester.
 - `bountyos/static/`: dashboardens HTML, CSS och JavaScript.
 - `pilot/`: tidigare research med källor och begränsningar.
 
-Nätverksåtkomst till GitHubs webbsidor behövs för sökning och till `api.github.com` för inlämning. Ollama använder modellregistret vid installation; när modellen finns lokalt behövs inget modell-API på internet. Projektet är en första fungerande programversion, inte verifierat lönsam verksamhet.
+Nätverksåtkomst till GitHubs webbsidor behövs för sökning, `raw.githubusercontent.com` för dokument, `codeload.github.com` för versionsbundet kodunderlag och `api.github.com` för inlämning. BountyHubs katalog använder `api.bountyhub.dev`; valfri valutaomräkning använder `api.frankfurter.dev`. Docker-imagen hämtas en gång från Docker Hub. Ollama använder modellregistret vid installation; när modellen finns lokalt behövs inget modell-API på internet. Projektet är en första fungerande programversion, inte verifierat lönsam verksamhet.

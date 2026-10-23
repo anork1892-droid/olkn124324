@@ -66,7 +66,7 @@ class HTTP:
         if self.local:
             validate_local_url(url, allow_path=True)
         elif parsed.scheme != "https" or parsed.hostname not in {
-            "github.com", "api.github.com", "raw.githubusercontent.com"
+            "github.com", "api.github.com", "raw.githubusercontent.com", "api.frankfurter.dev", "api.bountyhub.dev"
         }:
             raise ConnectorError("Otillåten källadress.")
         if token and (parsed.scheme != "https" or parsed.hostname != "api.github.com"):
@@ -775,9 +775,69 @@ class GitHubSubmitter:
         user = self.api("/user")
         return {"configured": True, "status": "connected", "detail": "GitHub-autentisering verifierad.", "login": user["login"]}
 
-    def submit(self, task, context, delivery, may_publish=None):
+    @staticmethod
+    def validate_code_submission(task, context, delivery, test_report, work_plan):
+        """Revalidate persisted code artifacts without running target Python."""
+        from .code_worker import CodeWorker, MAX_SOURCE_CHARS, implementation_path, safe_python_path
+
+        repo, _ = issue_parts(task["url"])
+        expected_test = "tests/test_bountyos_regression_" + hashlib.sha256(task["url"].encode()).hexdigest()[:12] + ".py"
+        files = context.get("files")
+        commit = context.get("commit")
+        if (context.get("kind") != "code" or context.get("repo") != repo
+                or not isinstance(commit, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", commit)
+                or not isinstance(files, dict) or not 1 <= len(files) <= 30
+                or any(not safe_python_path(path) or not isinstance(content, str)
+                       or "\x00" in content for path, content in files.items())
+                or len({path.casefold() for path in files}) != len(files)
+                or sum(map(len, files.values())) > MAX_SOURCE_CHARS
+                or context.get("regression_path") != expected_test
+                or expected_test.casefold() in {path.casefold() for path in files}
+                or context.get("new_files") != [expected_test]):
+            raise ConnectorError("Kodleveransens versionsbundna underlag eller regressionstest är ogiltigt.")
+        editable = context.get("editable_paths")
+        allowed = {path for path in files if implementation_path(path)} | {expected_test}
+        if (not isinstance(editable, list) or not editable
+                or any(not isinstance(path, str) or path not in allowed for path in editable)
+                or len(set(editable)) != len(editable) or expected_test not in editable
+                or not isinstance(work_plan, dict)):
+            raise ConnectorError("Kodleveransens tillåtna filer eller arbetsplan är ogiltiga.")
+        plan = CodeWorker._plan({**work_plan, "feasible": True}, context)
+        CodeWorker._delivery(delivery, context, plan)
+        if not isinstance(test_report, dict) or test_report.get("regression_path") != expected_test:
+            raise ConnectorError("Kodleveransen saknar en fullständig testrapport för regressionstestet.")
+        baseline = test_report.get("baseline")
+        regression = test_report.get("regression_before")
+        final = test_report.get("final")
+
+        def counts_valid(report):
+            return (isinstance(report, dict)
+                    and all(type(report.get(name)) is int and 0 <= report[name] <= 100000
+                            for name in ("tests_run", "failure_count", "error_count", "skipped_count"))
+                    and report.get("expected_failure_count", 0) == 0
+                    and report.get("unexpected_success_count", 0) == 0)
+
+        if (not all(counts_valid(report) for report in (baseline, regression, final))
+                or not CodeWorker._report_ok(baseline) or not CodeWorker._report_ok(final)
+                or regression.get("passed") is not False or regression["failure_count"] <= 0
+                or regression["failure_count"] > regression["tests_run"]
+                or regression["error_count"] != 0 or regression["skipped_count"] != 0
+                or regression.get("timed_out")
+                or regression["tests_run"] <= baseline["tests_run"]
+                or final["tests_run"] != regression["tests_run"]):
+            raise ConnectorError("Kodleveransen kräver godkänd baslinje, ett test som hittar originalfelet och en godkänd slutkörning.")
+        return delivery
+
+    def submit(self, task, context, delivery, may_publish=None, *, test_report=None, work_plan=None):
         self._publish_guard = may_publish
-        validate_delivery(delivery)
+        code = task.get("specialist") == "code" or context.get("kind") == "code"
+        if code:
+            from .code_worker import safe_python_path
+            self.validate_code_submission(task, context, delivery, test_report, work_plan)
+            safe_path = safe_python_path
+        else:
+            validate_delivery(delivery)
+            safe_path = safe_doc_path
         repo, number = issue_parts(task["url"])
         user = self.api("/user")["login"]
         if not re.fullmatch(r"[A-Za-z0-9-]+", user):
@@ -791,23 +851,25 @@ class GitHubSubmitter:
         base = upstream["default_branch"]
         ref = self.api(f"/repos/{repo}/git/ref/heads/{parse.quote(base, safe='')}")
         base_sha = ref["object"]["sha"]
+        if code and base_sha != context["commit"]:
+            raise ConnectorError("Projektets kod har ändrats sedan testkörningen. Nytt arbete och nya tester behövs innan inlämning.")
         evidence = context.get("files", {})
         if not isinstance(evidence, dict):
-            raise ConnectorError("Leveransens dokumentunderlag är ogiltigt.")
+            raise ConnectorError("Leveransens filunderlag är ogiltigt.")
         delivered_paths = {item["path"] for item in delivery["files"]}
         new_paths = sorted(delivered_paths.difference(evidence))
         if new_paths:
             allowed_new = context.get("new_files", [])
             snapshot = context.get("commit")
             if (not isinstance(allowed_new, list)
-                    or not all(safe_doc_path(path) for path in allowed_new)
+                    or not all(safe_path(path) for path in allowed_new)
                     or not set(new_paths).issubset(allowed_new)
                     or not isinstance(snapshot, str)
                     or not re.fullmatch(r"[0-9a-fA-F]{40}", snapshot)
                     or not isinstance(base_sha, str)
                     or not re.fullmatch(r"[0-9a-fA-F]{40}", base_sha)
                     or not evidence):
-                raise ConnectorError("Nya dokument kräver en uttryckligen tillåten sökväg och verifierat underlag från en bestämd commit.")
+                raise ConnectorError("Nya filer kräver en uttryckligen tillåten sökväg och verifierat underlag från en bestämd commit.")
             # A contents 404 can also mean a missing ref. Prove the older
             # snapshot exists before treating its 404 responses as absent files.
             if snapshot != base_sha:
@@ -822,24 +884,33 @@ class GitHubSubmitter:
                         if exc.status_code == 404:
                             continue
                         raise
-                    raise ConnectorError("Det nya dokumentet finns redan i projektet: " + path + ". Ny granskning behövs.")
+                    raise ConnectorError("Den nya filen finns redan i projektet: " + path + ". Ny granskning behövs.")
         # A snapshot mismatch requires regenerated work, not overwriting new upstream docs.
         # New documentation can rely on any evidence file, including unchanged
         # files that are not part of the eventual delivery.
         for path, text in evidence.items():
             if new_paths or path in delivered_paths:
-                if not safe_doc_path(path) or not isinstance(text, str):
-                    raise ConnectorError("Leveransens dokumentunderlag är ogiltigt.")
+                if not safe_path(path) or not isinstance(text, str):
+                    raise ConnectorError("Leveransens filunderlag är ogiltigt.")
                 item = self.api(f"/repos/{repo}/contents/{parse.quote(path, safe='/')}?ref={parse.quote(base_sha, safe='')}")
                 if (not isinstance(item, dict) or item.get("type") != "file"
                         or item.get("target") is not None or item.get("submodule_git_url") is not None):
-                    raise ConnectorError("Underlaget är inte längre en vanlig dokumentfil; ny granskning behövs.")
+                    raise ConnectorError("Underlaget är inte längre en vanlig fil; ny granskning behövs.")
                 try:
                     current = base64.b64decode("".join(item.get("content", "").split()), validate=True).decode("utf-8")
                 except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
                     raise ConnectorError("Underlagets innehåll kunde inte verifieras; ny granskning behövs.") from None
                 if current != text:
                     raise ConnectorError("Underlaget har ändrats sedan arbetet skapades; ny granskning behövs.")
+        def check_tested_head():
+            if code:
+                latest = self.api(f"/repos/{repo}/git/ref/heads/{parse.quote(base, safe='')}")
+                if latest.get("object", {}).get("sha") != context["commit"]:
+                    raise ConnectorError("Projektets kod har ändrats sedan testkörningen. Nytt arbete och nya tester behövs innan inlämning.")
+
+        # Recheck after the evidence reads and again before opening the PR; a
+        # tested code patch must never be silently rebased onto a newer head.
+        check_tested_head()
         fork = self.api(f"/repos/{repo}/forks", payload={"default_branch_only": True}, method="POST")
         fork_name = fork["full_name"]
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", fork_name) or fork_name.split("/")[0].lower() != user.lower():
@@ -865,13 +936,26 @@ class GitHubSubmitter:
         tree = self.api(f"/repos/{fork_name}/git/trees", method="POST", payload={"base_tree": commit["tree"]["sha"], "tree": [
             {"path": item["path"], "mode": "100644", "type": "blob", "content": item["content"]} for item in delivery["files"]
         ]})
+        prefix = "fix" if code else "docs"
         if existing_ref:
             prior_commit = self.api(f"/repos/{fork_name}/git/commits/{existing_ref['object']['sha']}")
             if prior_commit.get("tree", {}).get("sha") != tree["sha"] or [p.get("sha") for p in prior_commit.get("parents", [])] != [base_sha]:
                 raise ConnectorError("En tidigare arbetsgren har annat innehåll. Kontrollera den innan ny inlämning.")
         else:
-            new_commit = self.api(f"/repos/{fork_name}/git/commits", method="POST", payload={"message": f"docs: address {repo}#{number}", "tree": tree["sha"], "parents": [base_sha]})
+            new_commit = self.api(f"/repos/{fork_name}/git/commits", method="POST", payload={"message": f"{prefix}: address {repo}#{number}", "tree": tree["sha"], "parents": [base_sha]})
             self.api(f"/repos/{fork_name}/git/refs", method="POST", payload={"ref": "refs/heads/" + branch, "sha": new_commit["sha"]})
-        pr = self.api(f"/repos/{repo}/pulls", method="POST", payload={"title": ("docs: " + task["title"])[:200], "head": head, "base": base,
-            "body": f"Closes #{number}\n\n{delivery['summary']}\n\nPrepared with a local AI assistant and reviewed against the issue and source documentation. Documentation path and content checks passed. No project tests were executed; no claim of runtime validation is made."})
+        if code:
+            validation = ("Prepared with a local AI assistant and independently reviewed against the issue and pinned source code.\n\n"
+                          f"Validation at commit `{base_sha}` used Python 3.12 unittest in isolated Docker containers without network access. "
+                          f"Baseline: {test_report['baseline']['tests_run']} tests passed. "
+                          f"Original code with the new regression: {test_report['regression_before']['tests_run']} tests ran, "
+                          f"{test_report['regression_before']['failure_count']} assertion failure(s), zero errors. "
+                          f"Repaired code: {test_report['final']['tests_run']} tests passed. "
+                          "Existing tests were preserved. These checks do not imply bounty acceptance or payment.")
+        else:
+            validation = ("Prepared with a local AI assistant and reviewed against the issue and source documentation. "
+                          "Documentation path and content checks passed. No project tests were executed; no claim of runtime validation is made.")
+        check_tested_head()
+        pr = self.api(f"/repos/{repo}/pulls", method="POST", payload={"title": (prefix + ": " + task["title"])[:200], "head": head, "base": base,
+            "body": f"Closes #{number}\n\n{delivery['summary']}\n\n" + validation})
         return pr["html_url"]

@@ -23,6 +23,11 @@ DEFAULT_SETTINGS = {
     "auto_submit": False,
     "poll_interval_minutes": 1,
     "daily_budget_sek": 0,
+    "bountyhub_enabled": True,
+    "bountyhub_docs_enabled": True,
+    "bountyhub_code_enabled": True,
+    "bountyhub_max_sek": 1500,
+    "bountyhub_assume_usd": True,
 }
 TASK_COLUMNS = {
     "id", "title", "url", "repo", "kind", "reward_amount", "reward_currency",
@@ -132,7 +137,7 @@ class Store:
         if unknown:
             raise ValueError("Okända inställningar: " + ", ".join(sorted(unknown)))
         for key, value in changes.items():
-            if key in {"running", "search_enabled", "autoscale", "auto_submit"} and type(value) is not bool:
+            if key in {"running", "search_enabled", "autoscale", "auto_submit", "bountyhub_enabled", "bountyhub_docs_enabled", "bountyhub_code_enabled", "bountyhub_assume_usd"} and type(value) is not bool:
                 raise ValueError(f"{key} måste vara true eller false.")
             if key == "max_agents" and (type(value) is not int or not 1 <= value <= 10):
                 raise ValueError("max_agents måste vara ett heltal mellan 1 och 10.")
@@ -140,6 +145,8 @@ class Store:
                 raise ValueError("poll_interval_minutes måste vara ett heltal mellan 1 och 1440.")
             if key == "daily_budget_sek" and (type(value) not in {int, float} or value != 0):
                 raise ValueError("Driftbudgeten är låst till 0 kr. Betalda API-anrop stöds inte.")
+            if key == "bountyhub_max_sek" and (type(value) is not int or not 1 <= value <= 100000):
+                raise ValueError("BountyHub-riktvärdet måste vara ett heltal mellan 1 och 100000 kr.")
         with self._connection(write=True) as conn:
             for key, value in changes.items():
                 conn.execute("UPDATE settings SET value=? WHERE key=?", (json.dumps(value), key))
@@ -214,9 +221,12 @@ class Store:
                 raise ValueError("Uppdraget finns inte.")
             self._update_task(conn, existing, fields)
 
-    def claim_task(self, worker_id: str) -> dict | None:
+    def claim_task(self, worker_id: str, eligible=None, priority=None) -> dict | None:
         with self._connection(write=True) as conn:
-            task = self._task(conn.execute("SELECT * FROM tasks WHERE status='qualified' ORDER BY created_at, id LIMIT 1").fetchone())
+            candidates = (self._task(row) for row in conn.execute("SELECT * FROM tasks WHERE status='qualified' ORDER BY created_at, id"))
+            if priority is not None:
+                candidates = sorted(candidates, key=priority)
+            task = next((item for item in candidates if eligible is None or eligible(item)), None)
             if task is None:
                 return None
             self._update_task(conn, task, {"status": "preparing", "worker_id": worker_id, "attempts": int(task.get("attempts", 0)) + 1})
@@ -284,7 +294,7 @@ class Store:
             "metrics": {
                 "earned_sek": earned_ore / 100, "pending_sek": round(pending, 2),
                 "estimated_cost_sek": 0, "net_sek": earned_ore / 100,
-                "active_agents": sum(agent["status"] in {"scouting", "preparing", "working", "reviewing", "checking", "submitting"} for agent in agents),
+                "active_agents": sum(agent["status"] in {"scouting", "preparing", "working", "testing", "reviewing", "checking", "submitting"} for agent in agents),
                 "completed_tasks": sum(task["status"] in {"ready", "submitted", "awaiting_payment", "paid"} for task in tasks),
             },
             "agents": agents, "tasks": tasks, "activity": activity,

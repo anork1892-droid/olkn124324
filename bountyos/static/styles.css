@@ -10,3 +10,6 @@
 .task-assessment{display:block;margin-top:6px;color:var(--subtle);font-size:.85em;line-height:1.5;overflow-wrap:anywhere}
 
 @media(max-width:850px){.heading-actions{flex-wrap:wrap}}
+
+.task-source{display:block;margin-top:5px;color:#648057;font-size:.85em;line-height:1.5}.test-stage{padding:12px 0;border-bottom:1px solid var(--line)}.test-stage>strong{font-size:11px;font-weight:550;color:#607750}.test-output{margin-top:7px;color:#6c835e;font-size:10px}.test-output summary{cursor:pointer}.test-output .artifact-output{max-height:220px}.price-estimate{padding-bottom:2px}.form-section h3+.settings-description{margin-top:10px}.agent-card-top{flex-wrap:wrap}
+#bountyhub-max-sek{width:82px;flex-shrink:0}

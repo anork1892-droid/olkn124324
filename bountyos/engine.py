@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from .connectors import (ConnectorError, GitHub, GitHubSubmitter, Ollama, RateLimited, embedded_json,
                          delivery_schema, issue_parts, qualify, safe_doc_path, validate_delivery, walk)
+from .bountyhub_workflow import BountyHubWorkflow
 
 
 PREPARE_SYSTEM = """Assess whether this documentation task can be completed using ONLY the supplied repository evidence.
@@ -47,8 +48,8 @@ Reject work requiring runtime verification or source code evidence absent from t
 """
 
 
-class Engine:
-    def __init__(self, store, github=None, model=None, submitter=None):
+class Engine(BountyHubWorkflow):
+    def __init__(self, store, github=None, model=None, submitter=None, bountyhub=None, code_worker=None):
         self.store = store
         self.github = github or GitHub(state_store=store)
         self.model = model or Ollama()
@@ -59,6 +60,7 @@ class Engine:
         self._submit_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
         self._task_lock = threading.Lock()
+        self._model_lock = threading.Lock()
         self._scheduler = None
         self._scan_thread = None
         self._workers = {}
@@ -71,6 +73,7 @@ class Engine:
             "ai": {"configured": True, "status": "unknown", "detail": "Lokal Ollama har inte kontrollerats.", "model": getattr(self.model, "model", "local")},
             "submission": {"configured": self.submitter.configured, "status": "unknown", "detail": "GitHub-autentisering har inte kontrollerats."},
         }
+        self._init_bountyhub(bountyhub, code_worker, use_default=github is None)
 
     def start(self):
         with self._lifecycle_lock:
@@ -83,7 +86,7 @@ class Engine:
                 "Ersättningen är inte bekräftad av en identifierad maintainer.",
             }
             for task in self.store.list_tasks():
-                if task["status"] in {"preparing", "working", "reviewing"}:
+                if task["status"] in {"preparing", "working", "testing", "reviewing"}:
                     self.store.update_task(task["id"], status="discovered", reason="Avbrutet vid omstart; behöver ny kontroll.")
                 elif task["status"] == "submitting":
                     self.store.update_task(task["id"], status="blocked", reason="Inlämningen avbröts. Kontrollera GitHub innan ett nytt försök görs.")
@@ -126,6 +129,7 @@ class Engine:
                 self.store.log(f"{eligibility_rechecks} tidigare blockerade uppdrag har köats för ny granskning. Inget uppdrag har godkänts automatiskt.")
             for agent in self.store.list_agents():
                 self.store.set_agent(agent["id"], status="idle", task=None, detail=None)
+            self._register_bountyhub_agents()
             self._scheduler = threading.Thread(target=self._loop, name="bountyos-scheduler", daemon=True)
             self._scheduler.start()
 
@@ -157,10 +161,18 @@ class Engine:
             self._connection("submission", self.submitter.check())
         except ConnectorError as exc:
             self._connection("submission", {"configured": self.submitter.configured, "status": "error", "detail": str(exc)})
+        if self.bountyhub:
+            status = self.code_sandbox.check()
+            self._connection("code_tests", status)
+            current = next((a for a in self.store.list_agents() if a["id"] == "bountyhub-code"), None)
+            if not current or current["status"] in {"idle", "blocked"}:
+                self.store.set_agent("bountyhub-code", name="BountyHub · små kodändringar", role="bountyhub_code",
+                                     status="idle" if status["status"] == "connected" else "blocked", task=None, detail=status["detail"])
         self._next_probe = time.monotonic() + 300
         return self.connection_status()
 
     def scan_now(self):
+        self._bountyhub_scan_now()
         if not self._scan_lock.acquire(blocking=False):
             return {"status": "already_running", "message": "En sökning pågår redan."}
         if self._stop.is_set():
@@ -236,7 +248,7 @@ class Engine:
             if task:
                 with self._task_lock:
                     current = self.store.get_task(task["id"])
-                    if current and current["status"] in {"discovered", "qualified"}:
+                    if current and current["status"] in {"discovered", "qualified"} and current.get("source") != "bountyhub":
                         self.store.update_task(task["id"], **fields)
 
         def assess(url):
@@ -246,7 +258,7 @@ class Engine:
             prior = existing.get(url)
             if prior:
                 current = self.store.get_task(prior["id"])
-                if not current or current["status"] != "discovered":
+                if not current or current["status"] != "discovered" or current.get("source") == "bountyhub":
                     return
             checked.add(url)
             try:
@@ -269,8 +281,8 @@ class Engine:
                 return
             with self._task_lock:
                 # A worker may have claimed the task while the network read ran.
-                current = self.store.get_task(prior["id"]) if prior else None
-                if current and current["status"] not in {"discovered", "qualified"}:
+                current = self.store.get_task(prior["id"]) if prior else next((item for item in self.store.list_tasks() if item["url"] == url), None)
+                if current and (current["status"] not in {"discovered", "qualified"} or current.get("source") == "bountyhub"):
                     return
                 task_id = self.store.upsert_task(candidate)
                 latest = self.store.get_task(task_id)
@@ -290,7 +302,7 @@ class Engine:
 
         try:
             existing = {task["url"]: task for task in self.store.list_tasks()}
-            pending = sorted((task for task in existing.values() if task["status"] == "discovered"),
+            pending = sorted((task for task in existing.values() if task["status"] == "discovered" and task.get("source") != "bountyhub"),
                              key=lambda task: (task["updated_at"], task["id"]))[:12]
             # Existing work must not depend on a successful search for new work.
             for task in pending:
@@ -383,6 +395,8 @@ class Engine:
                 now = time.monotonic()
                 if settings["search_enabled"] and now >= self._next_scan:
                     self.scan_now()
+                if settings["search_enabled"] and now >= self._next_bountyhub_scan:
+                    self._bountyhub_scan_now()
                 if not settings["running"]:
                     continue
                 if now >= self._next_probe:
@@ -394,13 +408,16 @@ class Engine:
                     self._poll_submissions()
                     self._next_submission_check = time.monotonic() + 900
                 if settings["auto_submit"] and now >= self._next_ready_attempt:
-                    ready = next((task for task in self.store.list_tasks() if task["status"] == "ready"), None)
+                    ready = self._next_ready_task(settings)
                     if ready:
                         self._submit_ready(ready)
                     self._next_ready_attempt = time.monotonic() + 60
                 if self.connection_status()["ai"]["status"] != "connected":
                     continue
-                for i in range(self._worker_limit(settings)):
+                worker_limit = 1 if self.bountyhub and settings["bountyhub_enabled"] else self._worker_limit(settings)
+                if worker_limit == 1 and any(thread.is_alive() for thread in self._workers.values()):
+                    continue
+                for i in range(worker_limit):
                     if not self.store.get_settings()["running"] or self._stop.is_set():
                         break
                     name = f"worker-{i + 1}"
@@ -408,10 +425,12 @@ class Engine:
                     if thread and thread.is_alive():
                         continue
                     with self._task_lock:
-                        task = self.store.claim_task(name)
+                        task = self.store.claim_task(name, eligible=lambda item: self._worker_eligible(item, settings), priority=self._task_priority)
                     if not task:
                         break
-                    thread = threading.Thread(target=self._work, args=(name, task), name=name, daemon=True)
+                    agent_name = ("bountyhub-code" if task.get("specialist") == "code" else "bountyhub-docs") if task.get("source") == "bountyhub" else name
+                    self.store.update_task(task["id"], worker_id=agent_name)
+                    thread = threading.Thread(target=self._work, args=(agent_name, task), name=name, daemon=True)
                     self._workers[name] = thread
                     thread.start()
             except Exception:
@@ -466,7 +485,9 @@ class Engine:
         return {key: plan[key] for key in ("summary", "steps", "source_paths", "target_paths")}
 
     def _work_paused(self, task):
-        if not self.store.get_settings()["running"] or self._stop.is_set():
+        settings = self.store.get_settings()
+        specialist_disabled = task.get("source") == "bountyhub" and (not settings["bountyhub_enabled"] or not settings["bountyhub_code_enabled" if task.get("specialist") == "code" else "bountyhub_docs_enabled"])
+        if not settings["running"] or self._stop.is_set() or specialist_disabled:
             self.store.update_task(task["id"], status="qualified", reason="Arbetet väntar tills tjänsten startas igen.")
             return True
         return False
@@ -475,9 +496,10 @@ class Engine:
         # Apply one context bound to planning, writing, correction and review.
         if len(system) + len(json.dumps(data)) + len(json.dumps(schema)) > 70_000:
             raise ConnectorError("Underlaget är för stort för den lokala modellens kontextfönster.")
-        if schema is None:
-            return self.model.generate(system, data)
-        return self.model.generate(system, data, schema=schema)
+        with self._model_lock:
+            if schema is None:
+                return self.model.generate(system, data)
+            return self.model.generate(system, data, schema=schema)
 
     def _write_delivery(self, worker_id, task, request_data, context):
         schema = delivery_schema(request_data["editable_paths"])
@@ -508,7 +530,10 @@ class Engine:
         return None
 
     def _work(self, worker_id, task):
-        self.store.set_agent(worker_id, name="Dokumentationsagent " + worker_id.rsplit("-", 1)[-1], role="worker", status="preparing", task=task["id"], detail="Kontrollerar originaluppdrag, källdokument och möjliga ändringar.")
+        if task.get("source") == "bountyhub" and task.get("specialist") == "code":
+            return self._work_code(worker_id, task)
+        is_bountyhub = task.get("source") == "bountyhub"
+        self.store.set_agent(worker_id, name="BountyHub · dokumentation" if is_bountyhub else "Dokumentationsagent " + worker_id.rsplit("-", 1)[-1], role="bountyhub_docs" if is_bountyhub else "worker", status="preparing", task=task["id"], detail="Kontrollerar originaluppdrag, källdokument och möjliga ändringar.")
         review_id = "review-" + worker_id
         stage = "preparation"
         try:
@@ -516,14 +541,20 @@ class Engine:
                 return
             self.store.update_task(task["id"], status="preparing", reason="Granskar underlag innan skrivarbete kan börja.", work_plan=None)
             issue = self.github.issue(task["url"])
-            eligible = qualify(issue)
+            eligible = self._qualify_task(issue, task)
             if eligible["status"] != "qualified":
                 self.store.update_task(task["id"], status=eligible["status"], reason=eligible["reason"])
                 if eligible.get("original_issue_url"):
                     self._queue_original(eligible)
                     self._next_scan = 0
                 return
+            if is_bountyhub and eligible.get("specialist") != "documentation":
+                self.store.update_task(task["id"], status="discovered", reason="Uppdragets omfattning har ändrats och granskas på nytt.")
+                return
+            issue = self._source_work_issue(issue, eligible)
             context = self.github.repository_context(issue)
+            if is_bountyhub:
+                context["source_issue_signature"] = self._source_signature(issue)
             editable_paths = self._editable_paths(context)
             request_data = {"issue": {"title": issue["title"], "body": issue["body"], "url": task["url"]},
                             "repository": context, "editable_paths": editable_paths}
@@ -618,7 +649,7 @@ class Engine:
 
     def _submit_ready(self, task):
         settings = self.store.get_settings()
-        if self._stop.is_set() or not settings["running"] or not settings["auto_submit"]:
+        if self._stop.is_set() or not settings["running"] or not settings["auto_submit"] or not self._specialist_enabled(task, settings):
             return
         if not self._submit_lock.acquire(blocking=False):
             return
@@ -634,13 +665,23 @@ class Engine:
             if not path.is_relative_to(artifact_root):
                 raise ConnectorError("Leveransfilen ligger utanför artefaktmappen.")
             envelope = json.loads((path.parent / "delivery.json").read_text(encoding="utf-8"))
-            delivery = validate_delivery(envelope["delivery"])
+            is_code = current.get("source") == "bountyhub" and current.get("specialist") == "code"
+            if is_code:
+                delivery = GitHubSubmitter.validate_code_submission(current, envelope["context"], envelope["delivery"], envelope.get("test_report"), envelope.get("work_plan"))
+            else:
+                delivery = validate_delivery(envelope["delivery"])
             if envelope.get("task_url") != task["url"] or envelope["review"].get("accepted") is not True or envelope["review"].get("findings"):
                 raise ConnectorError("Leveransen saknar en godkänd granskning för rätt uppdrag.")
             issue = self.github.issue(task["url"])
-            qualified = qualify(issue)
+            qualified = self._qualify_task(issue, task)
             if qualified["status"] != "qualified":
                 raise ConnectorError("Uppdraget är inte längre redo för leverans: " + qualified["reason"])
+            if current.get("source") == "bountyhub" and qualified.get("specialist") != current.get("specialist"):
+                raise ConnectorError("Uppdragets omfattning har ändrats; en ny specialistgranskning behövs.")
+            if current.get("source") == "bountyhub":
+                fresh_issue = self._source_work_issue(issue, qualified)
+                if envelope["context"].get("source_issue_signature") != self._source_signature(fresh_issue):
+                    raise ConnectorError("Uppdragets krav har ändrats sedan leveransen granskades. En ny granskning behövs.")
             # Setting is checked again immediately before the first external write.
             settings = self.store.get_settings()
             if not settings["running"] or not settings["auto_submit"] or self._stop.is_set():
@@ -648,9 +689,18 @@ class Engine:
             self.store.update_task(task["id"], status="submitting", reason="Skapar en GitHub pull request.")
             def may_publish():
                 current_settings = self.store.get_settings()
-                return current_settings["running"] and current_settings["auto_submit"] and not self._stop.is_set()
-            url = self.submitter.submit(current, envelope["context"], delivery, may_publish=may_publish)
-            self.store.update_task(task["id"], status="submitted", reason="Pull request inskickad. Ingen betalning har registrerats.", submission_url=url)
+                source_enabled = current.get("source") != "bountyhub" or (current_settings["bountyhub_enabled"] and current_settings["bountyhub_code_enabled" if is_code else "bountyhub_docs_enabled"])
+                return current_settings["running"] and current_settings["auto_submit"] and source_enabled and not self._stop.is_set()
+            if not may_publish():
+                self.store.update_task(task["id"], status="ready", reason="Inlämningen väntar tills arbetsagenten är aktiverad.")
+                return
+            extra = {"test_report": envelope["test_report"], "work_plan": envelope["work_plan"]} if is_code else {}
+            url = self.submitter.submit(current, envelope["context"], delivery, may_publish=may_publish, **extra)
+            followup = {"platform_claim_status": "manual_required"} if current.get("source") == "bountyhub" else {}
+            reason = "Pull request inskickad. Ingen betalning har registrerats."
+            if followup:
+                reason += " Registrera PR-länken som ett claim på BountyHub med samma GitHub-konto."
+            self.store.update_task(task["id"], status="submitted", reason=reason, submission_url=url, **followup)
             self.store.log("Leverans inskickad: " + url, level="success")
         except ConnectorError as exc:
             self.store.update_task(task["id"], status="blocked", reason="Inlämning behöver kontrolleras: " + str(exc))
