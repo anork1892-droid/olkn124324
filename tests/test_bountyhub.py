@@ -247,7 +247,6 @@ class BountyHubQualificationTests(unittest.TestCase):
             {"state": "CLOSED"}, {"assignedActors": {"nodes": [{"login": "worker"}]}},
             {"labels": {"nodes": [{"name": "in progress"}]}},
             {"body": "You must claim the issue before working."},
-            {"linkedPullRequests": {"nodes": [{"state": "OPEN"}]}},
             {"closedByPullRequestsReferences": {"nodes": [{"state": "MERGED"}]}},
         )
         for change in changes:
@@ -279,6 +278,33 @@ class BountyHubQualificationTests(unittest.TestCase):
         self.assertEqual(self.connector.qualify(data)["status"], "skipped")
         data.update(title="Rewrite Python application", body="Rewrite server.py and deploy to production.")
         self.assertEqual(self.connector.qualify(data)["status"], "skipped")
+
+    def test_open_competition_is_eligible_but_merged_work_is_not(self):
+        for key in ("linkedPullRequests", "closedByPullRequestsReferences"):
+            data = issue()
+            data[key] = {"nodes": [{"state": "OPEN"}]}
+            task = self.connector.qualify(data)
+            self.assertEqual(task["status"], "qualified")
+            self.assertTrue(task["competition"])
+            self.assertIn("Konkurrens", task["reason"])
+            data[key]["nodes"][0]["state"] = "MERGED"
+            self.assertEqual(self.connector.qualify(data)["status"], "blocked")
+
+    def test_body_can_identify_documentation_without_title_keyword(self):
+        data = issue()
+        data.update(title="Explain installation options", body="Update the existing guide with the supported flags.")
+        task = self.connector.qualify(data)
+        self.assertEqual(task["status"], "qualified")
+        self.assertEqual(task["specialist"], "documentation")
+        data["body"] += " Fix parser.py and add regression tests."
+        self.assertEqual(self.connector.qualify(data)["specialist"], "code")
+
+    def test_incidental_platform_words_do_not_reject_small_python_fix(self):
+        data = issue()
+        data.update(title="Fix Python version parser", body="Fix parser.py for version strings. Used by our Android deployment driver after migration.")
+        task = self.connector.qualify(data)
+        self.assertEqual(task["status"], "qualified")
+        self.assertEqual(task["specialist"], "code")
 
     def test_observed_locale_and_slug_urls_resolve_to_one_identity(self):
         text = LISTING + "\n" + LISTING.replace("/bounty/", "/en/bounty/") + "/fix-pagination"
@@ -441,11 +467,23 @@ class BountyHubCatalogTests(unittest.TestCase):
         for change in ({"claimed": True}, {"retracted": True}, {"solved": True}, {"isFrozen": True},
                        {"issueState": "closed"}, {"deletedAt": "2026-10-20T00:00:00Z"},
                        {"assignmentType": "exclusive"}, {"assignee": {"username": "another"}},
-                       {"claims": [open_claim]}, {"claims": [{**open_claim, "isOpen": False, "pullRequestIsmerged": True}]},
+                       {"claims": [{**open_claim, "isOpen": False, "pullRequestIsmerged": True}]},
                        {"claims": [{**open_claim, "isOpen": False, "isPaid": True}]}):
             self.catalog.json.return_value = catalog_row(**change)
             with self.subTest(change=change):
                 self.assertEqual(self.source.qualify(issue())["status"], "blocked")
+
+    def test_open_platform_claim_is_competition_and_not_exclusive_assignment(self):
+        claim = {"isOpen": True, "isPaid": False, "pullRequestIsmerged": False, "rejectedAt": None}
+        self.catalog.json.return_value = catalog_row(claims=[claim])
+        task = self.source.qualify(issue())
+        self.assertEqual(task["status"], "qualified")
+        self.assertTrue(task["competition"])
+        self.catalog.json.return_value = catalog_row(claims=[claim], assignmentType="exclusive")
+        task = self.source.qualify(issue())
+        self.assertEqual(task["status"], "blocked")
+        self.assertEqual(task["reward_amount"], 125)
+        self.assertEqual(task["reward_currency"], "$")
 
     def test_rejected_or_closed_unmerged_claims_are_not_active(self):
         for claim in ({"isOpen": False, "isPaid": False, "pullRequestIsmerged": False, "rejectedAt": None},

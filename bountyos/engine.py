@@ -90,6 +90,16 @@ class Engine(BountyHubWorkflow):
                     self.store.update_task(task["id"], status="discovered", reason="Avbrutet vid omstart; behöver ny kontroll.")
                 elif task["status"] == "submitting":
                     self.store.update_task(task["id"], status="blocked", reason="Inlämningen avbröts. Kontrollera GitHub innan ett nytt försök görs.")
+                elif (task.get("source") == "bountyhub" and task["status"] in {"blocked", "skipped"}
+                      and task.get("reason") in {
+                          "Det finns redan en aktiv eller godkänd registrerad leverans på BountyHub.",
+                          "Det finns redan en länkad leverans för uppdraget.",
+                          "Kodagentens första version stöder bara små Python-ändringar med automatiska tester.",
+                          "Uppdraget ligger utanför kodagentens stöd för små, isolerade Python-ändringar."}
+                      and not any(task.get(field) for field in ("artifact_path", "submission_url", "attempts", "worker_id", "bountyhub_scope_recheck_v2"))):
+                    self.store.update_task(task["id"], status="discovered", bountyhub_scope_recheck_v2=True,
+                                           reason="Väntar på ny granskning med bredare BountyHub-urval.")
+                    eligibility_rechecks += 1
                 elif (task["status"] == "blocked"
                       and task.get("reason", "").startswith("Modellen föreslog filer utanför det hämtade underlaget: ")
                       and task.get("reason") != "Modellen föreslog filer utanför det hämtade underlaget: docs/name.md. Denna version kan bara ändra de inlästa dokumenten."

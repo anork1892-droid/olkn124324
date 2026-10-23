@@ -341,7 +341,7 @@ class BountyHub(GitHub):
                   # remains visible rather than inventing currency metadata.
                   "currency": "$", "payment_status": payment, "assignment_type": value["assignmentType"],
                   "unavailable": value["claimed"] or value["retracted"] or value["solved"] or value["isFrozen"] or value["deletedAt"] is not None or value["issueState"] != "open",
-                  "assigned": value["assignee"] is not None, "active_claims": False}
+                  "assigned": value["assignee"] is not None, "active_claims": False, "accepted_claims": False}
         if detail:
             claims = value.get("claims")
             if not isinstance(claims, list) or len(claims) > 1000:
@@ -352,6 +352,8 @@ class BountyHub(GitHub):
                     raise ConnectorError("En registrerad BountyHub-leverans har okänd status.")
                 if claim["isPaid"] or claim["rejectedAt"] is None and (claim["isOpen"] or claim["pullRequestIsmerged"]):
                     record["active_claims"] = True
+                if claim["isPaid"] or claim["rejectedAt"] is None and claim["pullRequestIsmerged"]:
+                    record["accepted_claims"] = True
         return record
 
     def _catalog_search(self, limit):
@@ -441,7 +443,7 @@ class BountyHub(GitHub):
             "source_facts": {"author_association": issue.get("authorAssociation"), "reward_verified_paid": False,
                              "reward_currency_explicit": False, "bountyhub_current_funding_verified": False,
                              "project_acceptance_verified": False, "coverage": "github_indexed_announcements"},
-            "price_estimate": None,
+            "price_estimate": None, "competition": False,
         }
 
         def reject(reason, status="blocked"):
@@ -479,6 +481,7 @@ class BountyHub(GitHub):
                             "links": [listing], "amount": catalog["amount"], "currency": catalog["currency"],
                             "advertised": True, "checked_at": checked_at})
             result["bountyhub_url"] = listing
+            result.update(reward_amount=catalog["amount"], reward_currency=catalog["currency"])
             result["bountyhub_requirements"] = catalog["requirements"]
             result["bountyhub_payment_status"] = catalog["payment_status"]
             result["bountyhub_evidence"] = records
@@ -487,8 +490,9 @@ class BountyHub(GitHub):
                 return reject("BountyHub anger att annonsen är löst, indragen, fryst, borttagen eller stängd.")
             if catalog["assignment_type"] == "exclusive" or catalog["assigned"]:
                 return reject("BountyHub-uppdraget kräver tilldelning eller är redan tilldelat någon annan.")
-            if catalog["active_claims"]:
-                return reject("Det finns redan en aktiv eller godkänd registrerad leverans på BountyHub.")
+            if catalog["accepted_claims"]:
+                return reject("Det finns redan en mergad eller betald registrerad leverans på BountyHub.")
+            result["competition"] = catalog["active_claims"]
             combined += "\n" + catalog["requirements"]
         result["bountyhub_evidence"] = records
         links = list(dict.fromkeys(link for record in records for link in record["links"]))
@@ -519,22 +523,26 @@ class BountyHub(GitHub):
         if re.search(r"comment\s+[`\"']?/(?:attempt|claim)|must.{0,25}(?:claim|assigned)|first.{0,12}assigned", combined, re.I):
             return reject("Uppdraget kräver en reservation innan arbete kan börja.")
         for key in ("linkedPullRequests", "closedByPullRequestsReferences"):
-            if any(pr.get("state") in {"OPEN", "MERGED"} for pr in issue.get(key, {}).get("nodes", [])):
-                return reject("Det finns redan en länkad leverans för uppdraget.")
+            pull_requests = issue.get(key, {}).get("nodes", [])
+            if any(pr.get("state") == "MERGED" for pr in pull_requests):
+                return reject("Det finns redan en mergad leverans för uppdraget.")
+            if any(pr.get("state") == "OPEN" for pr in pull_requests):
+                result["competition"] = True
         # Front/back fragments do not establish that the middle of a discussion
         # is complete. A missing reservation or withdrawal must not be ignored.
         for key in ("timelineItems", "backTimelineItems"):
             info = issue.get(key, {}).get("pageInfo", {})
             if info.get("hasNextPage") or info.get("hasPreviousPage"):
                 return reject("Diskussionen är ofullständigt inläst; ledig omfattning är inte verifierad.")
-        docs = bool(re.search(r"\b(docs?|documentation|readme|faq|typos?|spelling)\b", title, re.I) or labels.intersection({"docs", "documentation"}))
+        docs = bool(re.search(r"\b(docs?|documentation|readme|faq|typos?|spelling)\b", title, re.I) or labels.intersection({"docs", "documentation"})
+                         or re.search(r"\b(?:add|write|update|fix|clarify|improve|correct|translate)\s+(?:(?:the|a|an|existing|new)\s+){0,2}(?:documentation|docs|readme|faq|guide|spelling|typos?)\b", combined, re.I))
         if docs and not requires_code_or_runtime(combined):
             result.update(specialist="documentation", kind="documentation")
         else:
             result.update(specialist="code", kind="code")
             if not re.search(r"\bpython\b|\b[A-Za-z0-9_/-]+\.py\b", combined, re.I) and not (catalog and str(catalog["language"]).casefold() == "python"):
                 return reject("Kodagentens första version stöder bara små Python-ändringar med automatiska tester.", "skipped")
-            if re.search(r"\b(?:rewrite|reimplement|migrate|migration|android|ios|smart contract|kernel|driver|cryptograph\w*|deploy|deployment)\b", combined, re.I):
+            if re.search(r"^\s*(?:\[[^\]]+\]\s*)*(?:rewrite|reimplement|migrate|deploy)\b", title, re.I):
                 return reject("Uppdraget ligger utanför kodagentens stöd för små, isolerade Python-ändringar.", "skipped")
         if type(max_sek) not in {int, float} or not math.isfinite(max_sek) or not 0 < max_sek <= 100000:
             return reject("BountyHub-agentens prisönskemål måste vara större än 0 och högst 100 000 kr.")
@@ -544,6 +552,8 @@ class BountyHub(GitHub):
         result["price_estimate"] = estimate
         label = "dokumentationsagenten" if result["specialist"] == "documentation" else "kodagentens förberedelse och tester"
         result.update(status="qualified", reason=f"Öppet BountyHub-annonserat uppdrag för {label}. Prisönskemålet är vägledande. Annonsen är inte en verifierad utbetalning; projektets godkännande återstår.")
+        if result["competition"]:
+            result["reason"] += " Konkurrens: en öppen leverans finns redan; uppdrag utan konkurrens prioriteras först."
         if estimate["status"] != "available":
             result["reason"] += " SEK-uppskattning saknas: " + estimate["reason"]
         return result

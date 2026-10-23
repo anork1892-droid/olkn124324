@@ -369,6 +369,27 @@ class EngineTests(unittest.TestCase):
         self.github.search.assert_not_called()
         self.model.generate.assert_not_called()
 
+    def test_bountyhub_scope_recheck_preserves_attempts_and_runs_once(self):
+        reason = "Det finns redan en länkad leverans för uppdraget."
+        fresh = self.legacy_blocked_task(71, source="bountyhub", reason=reason)
+        worked = self.legacy_blocked_task(72, source="bountyhub", reason=reason, attempts=1)
+        generic = self.legacy_blocked_task(73, reason=reason)
+        with patch.object(self.engine, "_loop"):
+            self.engine.start()
+            self.engine.stop()
+            self.assertEqual(self.store.get_task(fresh["id"])["status"], "discovered")
+            self.assertEqual(self.store.get_task(worked["id"])["status"], "blocked")
+            self.assertEqual(self.store.get_task(generic["id"])["status"], "blocked")
+            self.store.update_task(fresh["id"], status="blocked", reason=reason)
+            self.engine.start()
+            self.engine.stop()
+            self.assertEqual(self.store.get_task(fresh["id"])["status"], "blocked")
+
+    def test_uncontested_work_precedes_competing_offer_without_excluding_it(self):
+        free = {"id": "a", "competition": False, "price_estimate": {"within_preference": False}}
+        competing = {"id": "b", "competition": True, "price_estimate": {"within_preference": True}}
+        self.assertLess(self.engine._task_priority(free), self.engine._task_priority(competing))
+
     def test_start_requeues_only_legacy_eligibility_failures_once_without_network(self):
         self.store.update_settings({"running": False})
         tasks = [self.legacy_blocked_task(), self.legacy_blocked_task(

@@ -178,7 +178,8 @@ class BountyHubWorkflow:
         estimate = task.get("price_estimate") or {}
         preference = estimate.get("within_preference")
         # A soft preference never removes larger or unconverted offers from the queue.
-        return (0 if preference is True else 2 if preference is False else 1,
+        return (1 if task.get("competition") else 0,
+                0 if preference is True else 2 if preference is False else 1,
                 task.get("created_at", ""), task["id"])
 
     def _work_code(self, worker_id, task):
