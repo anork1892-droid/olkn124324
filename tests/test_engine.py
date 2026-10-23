@@ -369,6 +369,22 @@ class EngineTests(unittest.TestCase):
         self.github.search.assert_not_called()
         self.model.generate.assert_not_called()
 
+    def test_api_reader_requeues_only_untouched_access_failures_once(self):
+        reason = "GitHub kräver inloggning för att visa källan."
+        fresh = self.legacy_blocked_task(91, reason=reason)
+        discussion = self.legacy_blocked_task(92, reason="Diskussionen är ofullständigt inläst; ledig omfattning är inte verifierad.")
+        worked = self.legacy_blocked_task(93, reason=reason, attempts=1)
+        with patch.object(self.engine, "_loop"):
+            self.engine.start()
+            self.engine.stop()
+            for task in (fresh, discussion):
+                self.assertEqual(self.store.get_task(task["id"])["status"], "discovered")
+            self.assertEqual(self.store.get_task(worked["id"])["status"], "blocked")
+            self.store.update_task(fresh["id"], status="blocked", reason=reason)
+            self.engine.start()
+            self.engine.stop()
+            self.assertEqual(self.store.get_task(fresh["id"])["status"], "blocked")
+
     def test_bountyhub_scope_recheck_preserves_attempts_and_runs_once(self):
         reason = "Det finns redan en länkad leverans för uppdraget."
         fresh = self.legacy_blocked_task(71, source="bountyhub", reason=reason)

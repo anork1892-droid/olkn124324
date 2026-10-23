@@ -90,6 +90,13 @@ class Engine(BountyHubWorkflow):
                     self.store.update_task(task["id"], status="discovered", reason="Avbrutet vid omstart; behöver ny kontroll.")
                 elif task["status"] == "submitting":
                     self.store.update_task(task["id"], status="blocked", reason="Inlämningen avbröts. Kontrollera GitHub innan ett nytt försök görs.")
+                elif (task["status"] == "blocked"
+                      and (task.get("reason", "").startswith("GitHub kräver inloggning för att visa källan.")
+                           or task.get("reason") == "Diskussionen är ofullständigt inläst; ledig omfattning är inte verifierad.")
+                      and not any(task.get(field) for field in ("artifact_path", "submission_url", "attempts", "worker_id", "public_api_recheck_v1"))):
+                    self.store.update_task(task["id"], status="discovered", public_api_recheck_v1=True,
+                                           reason="Väntar på ny läsning via GitHubs offentliga API.")
+                    eligibility_rechecks += 1
                 elif (task.get("source") == "bountyhub" and task["status"] in {"blocked", "skipped"}
                       and task.get("reason") in {
                           "Det finns redan en aktiv eller godkänd registrerad leverans på BountyHub.",

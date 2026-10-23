@@ -39,11 +39,15 @@ class RedirectBlocked(ConnectorError):
     """A source needs a different access route, rather than a timed retry."""
 
 
+class LoginRedirect(RedirectBlocked):
+    """Public web read redirected to login; the public API may still work."""
+
+
 class NoRedirect(request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         target = parse.urlsplit(newurl)
         if target.scheme == "https" and target.hostname == "github.com" and target.path in {"/login", "/session"}:
-            raise RedirectBlocked("GitHub kräver inloggning för att visa källan. BountyOS offentliga anslutning kan inte läsa uppdraget. Kontrollera åtkomsten via Visa på GitHub.")
+            raise LoginRedirect("GitHub kräver inloggning för att visa källan. BountyOS offentliga anslutning kan inte läsa uppdraget. Kontrollera åtkomsten via Visa på GitHub.")
         raise RedirectBlocked("Källan skickar vidare till en annan adress. Länken behöver kontrolleras innan uppdraget kan granskas; automatiska omförsök är pausade.")
 
 
@@ -494,15 +498,26 @@ class GitHub:
 
     def issue(self, url):
         repo, number = issue_parts(url)
-        document = self.http.get(url)
+        try:
+            document = self.http.get(url)
+        except LoginRedirect:
+            return self._public_api_issue(url)
         for root in embedded_json(document):
             for item in walk(root):
                 if item.get("number") == number and item.get("url") == url and isinstance(item.get("body"), str) and "state" in item:
                     issue = dict(item)
                     issue["repo"] = repo
+                    if any(issue.get(key, {}).get("pageInfo", {}).get(flag)
+                           for key in ("timelineItems", "backTimelineItems")
+                           for flag in ("hasNextPage", "hasPreviousPage")):
+                        return self._public_api_issue(url)
                     issue["authorAssociation"] = self._issue_author_association(issue, repo)
                     return issue
         raise ConnectorError("GitHub-ärendet kunde inte läsas tillförlitligt.")
+
+    def _public_api_issue(self, url):
+        from .github_api import read_issue
+        return read_issue(self.http, url)
 
     def repository_context(self, issue):
         """Read bounded docs and verify explicit new targets at a pinned snapshot."""
