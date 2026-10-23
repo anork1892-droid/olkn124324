@@ -12,7 +12,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from .connectors import (ConnectorError, GitHub, GitHubSubmitter, Ollama, RateLimited, embedded_json,
+from .connectors import (ConnectorError, GitHub, GitHubSubmitter, Ollama, RateLimited, RedirectBlocked, embedded_json,
                          delivery_schema, issue_parts, qualify, safe_doc_path, validate_delivery, walk)
 from .bountyhub_workflow import BountyHubWorkflow
 
@@ -272,8 +272,12 @@ class Engine(BountyHubWorkflow):
             try:
                 candidate = qualify(self.github.issue(url))
             except ConnectorError as exc:
-                reason = "Granskningen kunde inte slutföras: " + str(exc) + " Ett nytt försök görs vid nästa sökning."
-                update_pending(prior, status="discovered", reason=reason)
+                redirected = isinstance(exc, RedirectBlocked)
+                reason = str(exc) if redirected else "Granskningen kunde inte slutföras: " + str(exc) + " Ett nytt försök görs vid nästa sökning."
+                update_pending(prior, status="blocked" if redirected else "discovered", reason=reason)
+                if redirected:
+                    count += 1
+                    outcomes["blocked"] += 1
                 self.store.log(reason, level="warning")
                 failures += 1
                 if isinstance(exc, RateLimited):

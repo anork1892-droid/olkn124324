@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 
-from .connectors import ConnectorError, HTTPFailure, RateLimited, issue_parts, qualify
+from .connectors import ConnectorError, HTTPFailure, RateLimited, RedirectBlocked, issue_parts, qualify
 
 
 class BountyHubWorkflow:
@@ -82,7 +82,10 @@ class BountyHubWorkflow:
                 with self._task_lock:
                     current = self.store.get_task(task["id"])
                     if current and current["status"] == "discovered":
-                        if isinstance(exc, HTTPFailure) and exc.status_code in {404, 410}:
+                        if isinstance(exc, RedirectBlocked):
+                            self.store.update_task(task["id"], status="blocked", reason=str(exc))
+                            counts["blocked"] += 1
+                        elif isinstance(exc, HTTPFailure) and exc.status_code in {404, 410}:
                             self.store.update_task(task["id"], status="blocked", reason="Originalärendet är borttaget eller kan inte längre läsas offentligt (HTTP " + str(exc.status_code) + ").")
                         else:
                             self.store.update_task(task["id"], reason="BountyHub-granskningen väntar: " + str(exc))

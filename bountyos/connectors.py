@@ -35,9 +35,16 @@ class HTTPFailure(ConnectorError):
         super().__init__(f"Källan svarade HTTP {status_code}; anslutningen är inte verifierad.")
 
 
+class RedirectBlocked(ConnectorError):
+    """A source needs a different access route, rather than a timed retry."""
+
+
 class NoRedirect(request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ConnectorError("Oväntad HTTP-omdirigering; begäran stoppades.")
+        target = parse.urlsplit(newurl)
+        if target.scheme == "https" and target.hostname == "github.com" and target.path in {"/login", "/session"}:
+            raise RedirectBlocked("GitHub kräver inloggning för att visa källan. BountyOS offentliga anslutning kan inte läsa uppdraget. Kontrollera åtkomsten via Visa på GitHub.")
+        raise RedirectBlocked("Källan skickar vidare till en annan adress. Länken behöver kontrolleras innan uppdraget kan granskas; automatiska omförsök är pausade.")
 
 
 class HTTP:

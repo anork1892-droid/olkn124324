@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from bountyos.app import SettingsUpdate
 from bountyos.code_worker import CodeWorkPaused
-from bountyos.connectors import ConnectorError, GitHub, HTTPFailure, RateLimited, qualify
+from bountyos.connectors import ConnectorError, GitHub, HTTPFailure, NoRedirect, RateLimited, RedirectBlocked, qualify
 from bountyos.engine import Engine
 from bountyos.store import Store
 from test_engine import delivery, issue, work_plan
@@ -223,6 +223,42 @@ class BountyHubWorkflowTests(unittest.TestCase):
         new = next(task for task in self.store.list_tasks() if task["url"] == new_issue["url"])
         self.assertEqual(new["status"], "qualified")
         self.bountyhub.search.assert_called_once()
+
+    def test_login_redirect_blocks_task_and_discovery_continues(self):
+        task_id = self.add_task(84, status="discovered")
+        raw = issue(url="https://github.com/owner/project/issues/85", number=85)
+        self.bountyhub.search.return_value = [raw["url"]]
+        def read(url):
+            if url.endswith("/84"):
+                NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://github.com/login?return_to=private-value")
+            return raw
+        self.bountyhub.issue.side_effect = read
+        self.scan_bountyhub()
+        task = self.store.get_task(task_id)
+        self.assertEqual(task["status"], "blocked")
+        self.assertIn("kräver inloggning", task["reason"])
+        self.assertNotIn("private-value", task["reason"])
+        self.assertTrue(any(t["url"] == raw["url"] and t["status"] == "qualified" for t in self.store.list_tasks()))
+        self.bountyhub.issue.reset_mock()
+        self.scan_bountyhub()
+        self.bountyhub.issue.assert_not_called()
+
+    def test_redirects_never_forward_requests_or_credentials(self):
+        for url in ("https://evil.example/login", "https://github.com.evil.example/login", "https://github.com/new/repo/issues/1", "http://github.com/login"):
+            with self.subTest(url=url), self.assertRaises(RedirectBlocked) as caught:
+                NoRedirect().redirect_request(None, None, 302, "Found", {}, url)
+            self.assertNotIn("GitHub kräver inloggning", str(caught.exception))
+
+    def test_generic_scout_also_stops_retrying_redirected_issues(self):
+        task_id = self.add_task(86, source=None, status="discovered")
+        self.github.issue.side_effect = RedirectBlocked("GitHub kräver inloggning för att visa källan.")
+        self.engine._scan_lock.acquire()
+        self.engine._scan()
+        self.assertEqual(self.store.get_task(task_id)["status"], "blocked")
+        self.github.issue.reset_mock()
+        self.engine._scan_lock.acquire()
+        self.engine._scan()
+        self.github.issue.assert_not_called()
 
     def test_transient_pending_issue_error_does_not_starve_new_discovery(self):
         old_id = self.add_task(82, status="discovered")

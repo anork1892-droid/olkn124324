@@ -82,7 +82,7 @@
     if (agent.role === "bountyhub_code") return isRunning() && settings().bountyhub_enabled !== false && settings().bountyhub_code_enabled !== false;
     return isRunning();
   };
-  const specialistName = task => task.specialist === "code" ? "Små Python-ändringar" : task.specialist === "documentation" ? "Dokumentation" : "Ej tilldelad";
+  const specialistName = task => task.specialist === "code" ? "Små Python-ändringar" : task.specialist === "documentation" ? "Dokumentation" : task.status === "discovered" ? "Väntar på granskning" : "Ingen specialist vald";
   const aiReady = () => ["ready", "connected", "ok", "available", "healthy"].includes(String(state?.connections?.ai?.status || "").toLowerCase());
   const workingStatuses = new Set(["preparing", "working", "testing", "in_progress", "executing", "solving", "researching", "evaluating", "reviewing", "review"]);
   const availableTasks = () => tasks().filter(task => !["paid", "rejected", "skipped", "closed", "expired"].includes(task.status));
